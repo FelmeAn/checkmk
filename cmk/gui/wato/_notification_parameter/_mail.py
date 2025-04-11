@@ -350,6 +350,7 @@ def _from_address_element(is_cse: bool) -> DictElement[Any]:
                     parameter_form=String(
                         title=Title("Email address"),
                         custom_validate=[ValidateEmailAddress()],
+                        field_size=FieldSize.LARGE,
                     ),
                 ),
                 "display_name": DictElement(
@@ -376,6 +377,7 @@ def _reply_to() -> DictElement[Any]:
                     parameter_form=String(
                         title=Title("Email address"),
                         custom_validate=[ValidateEmailAddress()],
+                        field_size=FieldSize.LARGE,
                     ),
                 ),
                 "display_name": DictElement(
@@ -407,7 +409,7 @@ def _disable_multiplexing(is_cse: bool) -> DictElement[Any]:
             value=True,
             label=Label(
                 "A separate notification is "
-                "send to every recipient. Recipients "
+                "sent to every recipient. Recipients "
                 "cannot see which other recipients "
                 "were notified."
             ),
