@@ -68,7 +68,15 @@ def parse_lnx_thermal(string_table: StringTable) -> Section:
 
         trip_points = _get_trip_points(factor, raw_trip_points)
 
-        parsed[_format_item_name(line[0])] = Thermal(
+        candidate = thermal_type.get("mode")
+        # If we ha ve only one sensor name, use the sensor name/type, so we avoid the thermal_zoneX switching after a reboot
+        if not candidate or candidate in ["enabled", "-"]:
+            candidate = _format_item_name(raw_name)
+        # If we have multiple sensor names with different zones, we can't avoid using the thermal zone and we will ever have zone numbers switching
+        if candidate in parsed:
+            candidate = f"{candidate} ({raw_name})"
+
+        parsed[candidate] = Thermal(
             enabled=_is_enabled(thermal_type),
             temperature=unscaled_temp / factor,
             passive=trip_points.get("passive"),
