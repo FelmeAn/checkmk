@@ -17,15 +17,20 @@ DomainType = Literal[
     "agent",
     "agent_binary",
     "audit_log",
+    "background_job",
     "bi_aggregation",
     "bi_pack",
     "bi_rule",
+    "broker_connection",
     "comment",
+    "configuration_entity",
     "contact_group_config",
     "dcd",
     "discovery_run",
     "downtime",
     "event_console",
+    "form_spec",
+    "folder",
     "folder_config",
     "host",
     "host_config",
@@ -40,6 +45,7 @@ DomainType = Literal[
     "license_request",
     "metric",
     "notification_rule",
+    "notification_parameter",
     "password",
     "parent_scan",
     "rule",
@@ -60,12 +66,17 @@ DomainType = Literal[
     "aux_tag",
     "autocomplete",
     "quick_setup",
+    "quick_setup_action_result",
+    "quick_setup_stage",
+    "quick_setup_stage_action_result",
     "managed_robots",
+    "onboarding",
 ]
 
 
 CmkEndpointName = Literal[
     "cmk/run",
+    "cmk/run_setup",
     "cmk/activate",
     "cmk/bake",
     "cmk/bake_and_sign",
@@ -86,6 +97,7 @@ CmkEndpointName = Literal[
     "cmk/download_by_hash",
     "cmk/download_by_host",
     "cmk/download_license_request",
+    "cmk/fetch",
     "cmk/fetch_phase_one",
     "cmk/list",
     "cmk/move",
@@ -135,7 +147,8 @@ CmkEndpointName = Literal[
     "cmk/verify",
     "cmk/register",
     "cmk/quick_setup",
-    "cmk/complete_quick_setup",
+    "cmk/save_quick_setup",
+    "cmk/edit_quick_setup",
 ]
 
 RestfulEndpointName = Literal[
@@ -162,6 +175,7 @@ RestfulEndpointName = Literal[
     ".../domain-types",
     ".../element",
     ".../element-type",
+    ".../fetch",
     ".../invoke",
     ".../modify",
     ".../persist",
@@ -177,6 +191,7 @@ RestfulEndpointName = Literal[
 ]  # fmt: off
 
 LinkRelation = CmkEndpointName | RestfulEndpointName
+TagGroup = Literal["Monitoring", "Setup", "Checkmk Internal", "Undocumented Endpoint"]
 
 PropertyFormat = Literal[
     # String values
@@ -237,7 +252,7 @@ class DomainObject(TypedDict):
     title: str
     links: list[LinkType]
     members: dict[str, Any]
-    extensions: dict[str, Any]
+    extensions: NotRequired[dict[str, Any]]
 
 
 class CollectionObject(TypedDict):
@@ -313,6 +328,8 @@ def translate_to_openapi_keys(
             schema["minimum"] = schema_num_minimum
         if schema_num_maximum is not None:
             schema["maximum"] = schema_num_maximum
+    if not required and location == "path":
+        raise ValueError(f"Path parameters must be required. In {name} - {description}")
     raw_values: OpenAPIParameter = {
         "name": name,
         "in": location,
@@ -321,7 +338,12 @@ def translate_to_openapi_keys(
     if description is not None:
         raw_values["description"] = description
     if allow_empty is not None:
-        raw_values["allowEmptyValue"] = allow_empty
+        if location == "query":
+            raw_values["allowEmptyValue"] = allow_empty
+        elif allow_empty is True:
+            raise ValueError(
+                f"allowEmptyValue can only be set to true for query parameters. In {name} - {description}"
+            )
     if example is not None:
         raw_values["example"] = example
     if schema:
@@ -453,6 +475,7 @@ ErrorStatusCodeInt = Literal[
     422,
     423,
     428,
+    429,
     500,
     504,
 ]
@@ -493,6 +516,7 @@ StatusCode = Literal[
     "422",
     "423",
     "428",
+    "429",
     "500",
     "504",
 ]

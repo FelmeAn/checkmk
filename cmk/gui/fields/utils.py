@@ -3,15 +3,9 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-import collections
-import functools
 import typing
-from collections.abc import Callable, Mapping
-from typing import Any, Literal, NamedTuple, TypedDict, TypeVar
-
-from marshmallow import ValidationError
-
-from livestatus import SiteId
+from collections.abc import Callable
+from typing import Any, Literal, NamedTuple, TypeVar
 
 from cmk.utils.livestatus_helpers import tables
 from cmk.utils.livestatus_helpers.expressions import (
@@ -27,7 +21,6 @@ from cmk.utils.livestatus_helpers.expressions import (
 from cmk.utils.livestatus_helpers.types import Table
 from cmk.utils.tags import BuiltinTagConfig, TagGroup, TagID
 
-from cmk.gui import site_config
 from cmk.gui.fields.base import BaseSchema as BaseSchema
 from cmk.gui.utils.escaping import strip_tags
 from cmk.gui.watolib.host_attributes import (
@@ -58,43 +51,7 @@ def collect_attributes(
     context: ObjectContext,
 ) -> list[Attr]:
     """Collect all host attributes for a specific object type
-
-    Use cases can be host or folder creation or updating.
-
-    Args:
-        object_type:
-            Either 'host', 'folder' or 'cluster'
-
-        context:
-            Either 'create' or 'update' or 'view'
-
-    Returns:
-        A list of attribute describing named-tuples.
-
-    Examples:
-
-        >>> attrs = collect_attributes('host', 'create')
-        >>> assert len(attrs) > 10, len(attrs)
-
-        >>> attrs = collect_attributes('host', 'update')
-        >>> assert len(attrs) > 10, len(attrs)
-
-        >>> attrs = collect_attributes('cluster', 'create')
-        >>> assert len(attrs) > 10, len(attrs)
-
-        >>> attrs = collect_attributes('cluster', 'update')
-        >>> assert len(attrs) > 10, len(attrs)
-
-        >>> attrs = collect_attributes('folder', 'create')
-        >>> assert len(attrs) > 10, len(attrs)
-
-        >>> attrs = collect_attributes('folder', 'update')
-        >>> assert len(attrs) > 10
-
-    To check the content of the list, uncomment this one.
-
-        # >>> import pprint
-        # >>> pprint.pprint(attrs)
+    (host, folder or cluster) and context (create, update or view).
 
     """
     something = TypeVar("something")
@@ -202,147 +159,6 @@ def collect_attributes(
             )
         )
     return result
-
-
-def _field_from_attr(attr):
-    """
-    >>> field = _field_from_attr(
-    ...     Attr(
-    ...         name='simple_text',
-    ...         mandatory=False,
-    ...         description='Hurz!',
-    ...         section='',
-    ...         field=None,
-    ...     )
-    ... )
-    >>> field.required
-    False
-
-    >>> field.metadata
-    {'description': 'Hurz!'}
-
-    >>> _attr = Attr(
-    ...     name='time',
-    ...     mandatory=True,
-    ...     description='Hello World',
-    ...     section='',
-    ...     field=None,
-    ... )
-    >>> _field_from_attr(_attr)  # doctest: +ELLIPSIS
-    <fields.String(...)>
-
-    >>> _attr = Attr(
-    ...     name='time',
-    ...     mandatory=True,
-    ...     description='Hello World',
-    ...     section='',
-    ...     field=None,
-    ... )
-    >>> schema = _field_from_attr(_attr)
-    >>> schema  # doctest: +ELLIPSIS
-    <fields.String(...)>
-
-    Returns:
-
-    """
-    if attr.field is not None:
-        return attr.field
-
-    def site_exists(site_name: SiteId) -> None:
-        if site_name not in site_config.sitenames():
-            raise ValidationError(f"Site {site_name!r} does not exist.")
-
-    validators = {
-        "site": site_exists,
-    }
-
-    class FieldParams(TypedDict, total=False):
-        description: str
-        required: bool
-        enum: list[str | None]
-        validate: Callable[[Any], Any]
-        allow_none: bool
-
-    kwargs: FieldParams = {
-        "required": attr.mandatory,
-        "description": attr.description,
-    }
-    # If we assigned None to enum, this would lead to a broken OpenApi specification!
-    if attr.enum is not None:
-        kwargs["enum"] = attr.enum
-
-    if attr.allow_none is True:
-        kwargs["allow_none"] = True
-
-    if attr.name in validators:
-        kwargs["validate"] = validators[attr.name]
-
-    return fields.String(**kwargs)
-
-
-def _schema_from_dict(name: str, schema_dict: Mapping[str, Any]) -> type[BaseSchema]:
-    dict_ = {**schema_dict}
-    dict_["cast_to_dict"] = True
-    return type(name, (BaseSchema,), dict_)
-
-
-@functools.lru_cache
-def attr_openapi_schema(
-    object_type: ObjectType,
-    context: ObjectContext,
-) -> type[BaseSchema]:
-    """
-
-    Examples:
-
-        Known attributes are allowed through:
-
-            >>> schema_class = attr_openapi_schema("host", "create")
-            >>> schema_obj = schema_class()
-            >>> schema_obj.load({'tag_address_family': 'ip-v4-only'})
-            {'tag_address_family': 'ip-v4-only'}
-
-            >>> schema_class = attr_openapi_schema("folder", "update")
-            >>> schema_obj = schema_class()
-            >>> schema_obj.load({'tag_address_family': 'ip-v4-only'})
-            {'tag_address_family': 'ip-v4-only'}
-
-            >>> schema_class = attr_openapi_schema("cluster", "create")
-            >>> schema_obj = schema_class()
-            >>> schema_obj.load({'tag_address_family': 'ip-v4-only'})
-            {'tag_address_family': 'ip-v4-only'}
-
-        Unknown attributes lead to an error:
-
-            >>> schema_obj.load({'foo': 'bar'})
-            Traceback (most recent call last):
-            ...
-            marshmallow.exceptions.ValidationError: {'foo': ['Unknown field.']}
-
-        Wrong values on tag groups also lead to an error:
-
-            >>> schema_obj.load({'tag_address_family': 'ip-v5-only'})
-            Traceback (most recent call last):
-            ...
-            marshmallow.exceptions.ValidationError: {'tag_address_family': ["'ip-v5-only' is not one of the enum values: ['ip-v4-only', 'ip-v6-only', 'ip-v4v6', 'no-ip']"]}
-
-    Args:
-        object_type:
-            Either "host", "folder" or "cluster".
-
-        context:
-            Either "create" or "update"
-
-    Returns:
-        A marshmallow schema with the attributes as fields.
-
-    """
-    schema = collections.OrderedDict()
-    for attr in collect_attributes(object_type, context):
-        schema[attr.name] = _field_from_attr(attr)
-
-    class_name = f"{object_type.title()}{context.title()}Attribute"
-    return _schema_from_dict(class_name, schema)
 
 
 def tree_to_expr(filter_dict: QueryExpression, table: Any = None) -> QueryExpression:

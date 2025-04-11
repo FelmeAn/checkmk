@@ -11,11 +11,11 @@ from typing import Any, Literal
 
 from livestatus import SiteId
 
+from cmk.ccc import store
+from cmk.ccc.site import omd_site
+
 import cmk.utils.render
 from cmk.utils.certs import CertManagementEvent
-from cmk.utils.crypto.certificate import Certificate, CertificateWithPrivateKey
-from cmk.utils.crypto.password import Password as PasswordType
-from cmk.utils.crypto.types import HashAlgorithm, PEMDecodingError
 from cmk.utils.log.security_event import log_security_event
 from cmk.utils.user import UserId
 
@@ -47,8 +47,10 @@ from cmk.gui.valuespec import (
     TextInput,
 )
 
-from cmk.ccc import store
-from cmk.ccc.site import omd_site
+from cmk.crypto.certificate import Certificate, CertificateWithPrivateKey
+from cmk.crypto.hash import HashAlgorithm
+from cmk.crypto.password import Password as PasswordType
+from cmk.crypto.pem import PEMDecodingError
 
 
 class KeypairStore:
@@ -273,7 +275,9 @@ class PageEditKey:
             )
         return None
 
-    def _create_key(self, alias: str, passphrase: PasswordType) -> None:
+    def _create_key(
+        self, alias: str, passphrase: PasswordType, default_key_size: int = 4096
+    ) -> None:
         keys = self.key_store.load()
 
         new_id = 1
@@ -281,7 +285,7 @@ class PageEditKey:
             new_id = max(new_id, key_id + 1)
 
         assert user.id is not None
-        key = generate_key(alias, passphrase, user.id, omd_site())
+        key = generate_key(alias, passphrase, user.id, omd_site(), key_size=default_key_size)
         self._log_create_key(key.to_certificate())
         keys[new_id] = key
         self.key_store.save(keys)
@@ -584,13 +588,20 @@ class PageDownloadKey:
         )
 
 
-def generate_key(alias: str, passphrase: PasswordType, user_id: UserId, site_id: SiteId) -> Key:
+def generate_key(
+    alias: str,
+    passphrase: PasswordType,
+    user_id: UserId,
+    site_id: SiteId,
+    key_size: int = 4096,
+) -> Key:
     # Note: Verification of the signatures makes assumptions about the key (RSA) and the padding
     # scheme (PKCS1v15). Make sure this is adjusted before changing it here.
     key_pair = CertificateWithPrivateKey.generate_self_signed(
         common_name=alias,
         organization=f"Checkmk Site {site_id}",
         organizational_unit=user_id,
+        key_size=key_size,
     )
     return Key(
         certificate=key_pair.certificate.dump_pem().str,

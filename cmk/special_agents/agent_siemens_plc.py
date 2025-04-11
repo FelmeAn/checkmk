@@ -11,9 +11,8 @@ import sys
 from itertools import groupby
 
 import snap7
-from snap7.common import Snap7Library
-from snap7.exceptions import Snap7Exception
-from snap7.types import Areas
+from snap7.common import load_library
+from snap7.type import Areas
 
 from cmk.special_agents.v0_unstable.agent_common import SectionWriter
 
@@ -84,7 +83,7 @@ def parse_spec(hostspec):
     for spec in parts[5:]:
         p = spec.split(",")
         if len(p) != 5:
-            print("ERROR: Invalid value specified: %s" % spec, file=sys.stderr)
+            sys.stderr.write("ERROR: Invalid value specified: %s\n" % spec)
             return 1
 
         if ":" in p[0]:
@@ -164,7 +163,9 @@ def parse_arguments(sys_argv):
     )
     parser.add_argument("--verbose", "-v", action="count", default=0)
     parser.add_argument(
-        "--debug", action="store_true", help="Debug mode: let Python exceptions raise through"
+        "--debug",
+        action="store_true",
+        help="Debug mode: let Python exceptions raise through",
     )
 
     return parser.parse_args(sys_argv)
@@ -281,9 +282,9 @@ def main(sys_argv=None):
 
     socket.setdefaulttimeout(args.timeout)
 
-    # The dynamic library detection of Snap7Library using ctypes.util.find_library does not work for
-    # some reason. Load the library from our standard path.
-    Snap7Library(lib_location="%s/lib/libsnap7.so" % os.environ["OMD_ROOT"])
+    # The dynamic library detection of snap7's load_library using ctypes.util.find_library does not
+    # work for some reason. Load the library from our standard path.
+    load_library(lib_location="%s/lib/libsnap7.so" % os.environ["OMD_ROOT"])
 
     client = snap7.client.Client()
 
@@ -292,15 +293,15 @@ def main(sys_argv=None):
 
         try:
             client.connect(device["host_address"], device["rack"], device["slot"], device["port"])
-        except Snap7Exception as e:
-            print(_snap7error(hostname, "Error connecting to device", e), file=sys.stderr)
+        except Exception as e:
+            sys.stderr.write(_snap7error(hostname, "Error connecting to device", e) + "\n")
             continue
 
         try:
             cpu_state = client.get_cpu_state()
-        except Snap7Exception as e:
+        except Exception as e:
             cpu_state = None
-            print(_snap7error(hostname, "Error reading device CPU state", e), file=sys.stderr)
+            sys.stderr.write(_snap7error(hostname, "Error reading device CPU state", e) + "\n")
 
         parsed_area_values = []
         for (area_name, db_number), iter_values in _group_device_values(device):
@@ -313,8 +314,8 @@ def main(sys_argv=None):
                     start_address,
                     size=end_address - start_address,
                 )
-            except Snap7Exception as e:
-                print(_snap7error(hostname, "Error reading data area", e), file=sys.stderr)
+            except Exception as e:
+                sys.stderr.write(_snap7error(hostname, "Error reading data area", e) + "\n")
                 continue
 
             parsed_area_values.extend(_cast_values(values, start_address, area_value))

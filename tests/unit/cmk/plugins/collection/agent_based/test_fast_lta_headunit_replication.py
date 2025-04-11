@@ -2,18 +2,19 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-from collections.abc import Sequence
+
+from collections.abc import Callable, Sequence
 
 import pytest
 
-from tests.unit.conftest import FixRegister
-
-from cmk.checkengine.checking import CheckPluginName
-
-from cmk.base.api.agent_based.plugin_classes import CheckFunction, DiscoveryFunction
+from cmk.checkengine.plugins import (
+    AgentBasedPlugins,
+    CheckFunction,
+    CheckPlugin,
+    CheckPluginName,
+)
 
 from cmk.agent_based.v2 import (
-    CheckPlugin,
     CheckResult,
     DiscoveryResult,
     Result,
@@ -22,13 +23,16 @@ from cmk.agent_based.v2 import (
     StringTable,
 )
 
+type DiscoveryFunction = Callable[..., DiscoveryResult]
+
+
 check_name = "fast_lta_headunit_replication"
 
 
 # TODO: drop this after migration
 @pytest.fixture(scope="module", name="plugin")
-def _get_plugin(fix_register: FixRegister) -> CheckPlugin:
-    return fix_register.check_plugins[CheckPluginName(check_name)]
+def _get_plugin(agent_based_plugins: AgentBasedPlugins) -> CheckPlugin:
+    return agent_based_plugins.check_plugins[CheckPluginName(check_name)]
 
 
 # TODO: drop this after migration

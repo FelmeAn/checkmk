@@ -5,9 +5,9 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import Any, assert_never, Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
-from flask import g as g  # pylint: disable=unused-import
+from flask import g as g
 from flask import request, session
 from werkzeug.local import LocalProxy
 
@@ -16,43 +16,15 @@ T = TypeVar("T")
 VarName = Literal[
     "config",
     "display_options",
-    "endpoint",
     "html",
-    "output_format",
     "output_funnel",
     "permission_tracking",
     "response",
     "theme",
     "timeout_manager",
     "translation",
-    "url_filter",
     "user_errors",
 ]
-
-#
-# RATIONALE
-#
-# It appears that there is a bug in Flask that prevents the application context
-# from being properly copied when using `copy_current_request_context`.
-#
-# This bug is tracked in GitHub issue #3306 (https://github.com/pallets/flask/issues/3306),
-# and it has not yet been resolved as of the latest version of Flask (1.1.5 as of this writing).
-#
-# Because of this, we can't store our request local variables on the `g` object, because that would
-# make it impossible to have access to them from other threads whenever we would access it via
-# `copy_current_request_context`.
-#
-# Aside:
-#     There is another bug in `copy_current_request_context`, therefore use `copy_request_context`
-#     in this repository. See: cmk.gui.utils.request_context:copy_request_context
-#
-# Because of these issues, we introduce a new meta storage dict on the Request (see cmk.gui.http)
-# and store our request local variables there.
-#
-# NOTE:
-#     The `g` object can still be used, but keep in mind that accessing those values from other
-#     threads will be IMPOSSIBLE.
-#
 
 
 def set_global_var(name: VarName, obj: Any) -> None:
@@ -132,7 +104,7 @@ def session_attr(
 
         if not isinstance(rv, type_class):
             raise ValueError(
-                f"Object session[\"{'.'.join(attr_names)}\"] is not of type {type_class}"
+                f'Object session["{".".join(attr_names)}"] is not of type {type_class}'
             )
 
         return rv
@@ -140,17 +112,12 @@ def session_attr(
     def maybe_str_lookup(_name: str) -> T | None:
         return getattr(session, _name)
 
-    if isinstance(name, tuple):  # pylint: disable=no-else-return
-        return LocalProxy(partial(maybe_tuple_lookup, name), unbound_message=UNBOUND_MESSAGE)  # type: ignore[return-value]
-    if isinstance(name, str):
-        return LocalProxy(partial(maybe_str_lookup, name), unbound_message=UNBOUND_MESSAGE)  # type: ignore[return-value]
-
-    assert_never(name)
-
-
-# NOTE: Flask offers the proxies below, and we should go into that direction,
-# too. But currently our html class is a swiss army knife with tons of
-# responsibilities which we should really, really split up...
+    return LocalProxy(
+        partial(maybe_tuple_lookup, name)
+        if isinstance(name, tuple)
+        else partial(maybe_str_lookup, name),
+        unbound_message=UNBOUND_MESSAGE,
+    )  # type: ignore[return-value]
 
 
 def request_local_attr(name: str, type_class: type[T]) -> T:

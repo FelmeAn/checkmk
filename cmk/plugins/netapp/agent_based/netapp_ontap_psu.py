@@ -6,8 +6,8 @@
 from collections.abc import Mapping
 
 from cmk.agent_based.v2 import AgentSection, CheckPlugin, CheckResult, StringTable
-from cmk.plugins.lib import netapp_api
 from cmk.plugins.netapp import models
+from cmk.plugins.netapp.agent_based import lib as netapp_api
 
 Section = Mapping[str, models.ShelfPsuModel]
 
@@ -34,7 +34,7 @@ def parse_netapp_ontap_psu(string_table: StringTable) -> Section:
     return {
         psu.item_name(): psu
         for line in string_table
-        if (psu := models.ShelfPsuModel.model_validate_json(line[0]))
+        for psu in [models.ShelfPsuModel.model_validate_json(line[0])]
     }
 
 

@@ -80,7 +80,7 @@ class AuxTag:
         tag_id: TagID,
         title: str,
         topic: str | None,
-        help: str | None,  # pylint: disable=redefined-builtin
+        help: str | None,
     ) -> None:
         self.id = tag_id
         self.title = title
@@ -189,7 +189,10 @@ class AuxTagList:
         return [tag.to_config() for tag in self._tags]
 
     def get_choices(self) -> Sequence[tuple[str, str]]:
-        return [(aux_tag.id, aux_tag.title) for aux_tag in self._tags]
+        return [
+            (aux_tag.id, aux_tag.title)
+            for aux_tag in sorted(self._tags, key=lambda t: t.title.lower())
+        ]
 
 
 class GroupedTag:
@@ -237,7 +240,7 @@ class TagGroup:
         group_id: TagGroupID,
         title: str,
         topic: str | None,
-        help: str | None,  # pylint: disable=redefined-builtin
+        help: str | None,
         tags: list[GroupedTag],
     ) -> None:
         self.id = group_id
@@ -278,6 +281,9 @@ class TagGroup:
 
     def get_tag_choices(self) -> Sequence[tuple[TagID | None, str]]:
         return [(tag.id, tag.title) for tag in self.tags]
+
+    def get_non_empty_tag_choices(self) -> Sequence[tuple[TagID, str]]:
+        return [(tag.id, tag.title) for tag in self.tags if tag.id is not None]
 
     def get_tag_group_config(self, value: TagID | None) -> Mapping[TagGroupID, TagID]:
         """Return the set of tag groups which should be set for a host based on the given value"""
@@ -474,7 +480,7 @@ class TagConfig:
 
     # TODO: cleanup this mess
     # This validation is quite gui specific, I do not want to introduce this into the base classes
-    def _validate_group(self, tag_group: TagGroup) -> None:  # pylint: disable=too-many-branches
+    def _validate_group(self, tag_group: TagGroup) -> None:
         if not tag_group.id:
             raise MKGeneralException(_("Please specify an ID for your tag group."))
         _validate_tag_id(tag_group.id)

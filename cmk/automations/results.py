@@ -13,6 +13,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, astuple, dataclass, field
 from typing import Any, Literal, TypedDict, TypeVar
 
+from cmk.ccc import version as cmk_version
+from cmk.ccc.plugin_registry import Registry
+
 from cmk.utils.agentdatatype import AgentRawData
 from cmk.utils.check_utils import ParametersTypeAlias
 from cmk.utils.config_warnings import ConfigurationWarnings
@@ -23,14 +26,12 @@ from cmk.utils.notify_types import NotifyAnalysisInfo, NotifyBulks
 from cmk.utils.rulesets.ruleset_matcher import RulesetName
 from cmk.utils.servicename import Item, ServiceName
 
-from cmk.checkengine.discovery import AutocheckEntry, CheckPreviewEntry
+from cmk.checkengine.discovery import CheckPreviewEntry
 from cmk.checkengine.discovery import DiscoveryResult as SingleHostDiscoveryResult
 from cmk.checkengine.legacy import LegacyCheckParameters
 from cmk.checkengine.parameters import TimespecificParameters
+from cmk.checkengine.plugins import AutocheckEntry
 from cmk.checkengine.submitters import ServiceDetails, ServiceState
-
-from cmk.ccc import version as cmk_version
-from cmk.ccc.plugin_registry import Registry
 
 DiscoveredHostLabelsDict = dict[str, HostLabelValueDict]
 
@@ -81,7 +82,7 @@ class ServiceDiscoveryResult(ABCAutomationResult):
 
     @staticmethod
     def _from_dict(
-        serialized: Mapping[HostName, Mapping[str, Any]]
+        serialized: Mapping[HostName, Mapping[str, Any]],
     ) -> Mapping[HostName, SingleHostDiscoveryResult]:
         return {k: SingleHostDiscoveryResult(**v) for k, v in serialized.items()}
 
@@ -204,7 +205,7 @@ class AutodiscoveryResult(ABCAutomationResult):
 
     @staticmethod
     def _hosts_from_dict(
-        serialized: Mapping[HostName, Mapping[str, Any]]
+        serialized: Mapping[HostName, Mapping[str, Any]],
     ) -> Mapping[HostName, SingleHostDiscoveryResult]:
         return {k: SingleHostDiscoveryResult(**v) for k, v in serialized.items()}
 
@@ -222,21 +223,6 @@ class AutodiscoveryResult(ABCAutomationResult):
 
 
 result_type_registry.register(AutodiscoveryResult)
-
-
-@dataclass
-class SetAutochecksResult(ABCAutomationResult):
-    @staticmethod
-    def automation_call() -> str:
-        return "set-autochecks"
-
-
-result_type_registry.register(SetAutochecksResult)
-
-
-SetAutochecksTable = dict[
-    tuple[str, Item], tuple[ServiceName, Mapping[str, object], Labels, list[HostName]]
-]
 
 
 @dataclass
@@ -265,10 +251,13 @@ class SetAutochecksInput:
         return cls(
             discovered_host=HostName(raw["discovered_host"]),
             target_services={
-                ServiceName(n): AutocheckEntry.load(s) for n, s in raw["target_services"].items()
+                ServiceName(n): AutocheckEntry.load(literal_eval(s))
+                for n, s in raw["target_services"].items()
             },
             nodes_services={
-                HostName(k): {ServiceName(n): AutocheckEntry.load(s) for n, s in v.items()}
+                HostName(k): {
+                    ServiceName(n): AutocheckEntry.load(literal_eval(s)) for n, s in v.items()
+                }
                 for k, v in raw["nodes_services"].items()
             },
         )
@@ -277,9 +266,9 @@ class SetAutochecksInput:
         return json.dumps(
             {
                 "discovered_host": str(self.discovered_host),
-                "target_services": {n: s.dump() for n, s in self.target_services.items()},
+                "target_services": {n: repr(s.dump()) for n, s in self.target_services.items()},
                 "nodes_services": {
-                    str(k): {n: s.dump() for n, s in v.items()}
+                    str(k): {n: repr(s.dump()) for n, s in v.items()}
                     for k, v in self.nodes_services.items()
                 },
             }
@@ -356,6 +345,18 @@ result_type_registry.register(GetServicesLabelsResult)
 
 
 @dataclass
+class GetServiceNameResult(ABCAutomationResult):
+    service_name: str
+
+    @staticmethod
+    def automation_call() -> str:
+        return "get-service-name"
+
+
+result_type_registry.register(GetServiceNameResult)
+
+
+@dataclass
 class AnalyseHostResult(ABCAutomationResult):
     labels: Labels
     label_sources: LabelSources
@@ -366,6 +367,30 @@ class AnalyseHostResult(ABCAutomationResult):
 
 
 result_type_registry.register(AnalyseHostResult)
+
+
+@dataclass
+class AnalyzeHostRuleMatchesResult(ABCAutomationResult):
+    results: dict[str, list[object]]
+
+    @staticmethod
+    def automation_call() -> str:
+        return "analyze-host-rule-matches"
+
+
+result_type_registry.register(AnalyzeHostRuleMatchesResult)
+
+
+@dataclass
+class AnalyzeServiceRuleMatchesResult(ABCAutomationResult):
+    results: dict[str, list[object]]
+
+    @staticmethod
+    def automation_call() -> str:
+        return "analyze-service-rule-matches"
+
+
+result_type_registry.register(AnalyzeServiceRuleMatchesResult)
 
 
 @dataclass
@@ -534,7 +559,9 @@ class DiagSpecialAgentHostConfig:
         return cls(**deserialized)
 
     @staticmethod
-    def deserialize_host_primary_family(raw: int) -> Literal[
+    def deserialize_host_primary_family(
+        raw: int,
+    ) -> Literal[
         socket.AddressFamily.AF_INET,
         socket.AddressFamily.AF_INET6,
     ]:
@@ -680,7 +707,6 @@ result_type_registry.register(UpdateDNSCacheResult)
 
 @dataclass
 class UpdatePasswordsMergedFileResult(ABCAutomationResult):
-
     @staticmethod
     def automation_call() -> str:
         return "update-passwords-merged-file"
@@ -773,3 +799,15 @@ class BakeAgentsResult(ABCAutomationResult):
 
 
 result_type_registry.register(BakeAgentsResult)
+
+
+@dataclass
+class UnknownCheckParameterRuleSetsResult(ABCAutomationResult):
+    result: Sequence[str]
+
+    @staticmethod
+    def automation_call() -> str:
+        return "find-unknown-check-parameter-rule-sets"
+
+
+result_type_registry.register(UnknownCheckParameterRuleSetsResult)

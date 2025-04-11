@@ -13,9 +13,6 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Final, Self, TypeAlias
 
-from pydantic import GetCoreSchemaHandler
-from pydantic_core import core_schema, CoreSchema
-
 __all__ = ["HostAddress", "Hosts", "HostName"]
 
 
@@ -39,61 +36,51 @@ class HostAddress(str):
     REGEX_HOST_NAME: Final = re.compile(rf"^\w[{_ALLOWED_CHARS_CLASS}]*$", re.ASCII)
     REGEX_INVALID_CHAR: Final = re.compile(rf"[^{_ALLOWED_CHARS_CLASS}]")
 
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, _source_type: object, handler: GetCoreSchemaHandler
-    ) -> CoreSchema:
-        return core_schema.no_info_after_validator_function(
-            cls.validate_hostname,
-            handler(str),
-        )
+    def __new__(cls, text: str) -> Self:
+        """Construct a new HostAddress object
 
-    @staticmethod
-    def validate(text: str) -> None:
-        """Check if it is a HostAddress/HostName
+        Raises:
+            - ValueError: whenever the given text is not a valid HostAddress
 
-        >>> HostAddress.validate(".")
+        >>> HostAddress("checkmk.com")
+        'checkmk.com'
+
+        >>> HostAddress("::1")
+        '::1'
+
+        >>> HostAddress("Â")
         Traceback (most recent call last):
             ...
-        ValueError: Invalid hostaddress: '.'
+        ValueError: invalid host address: 'Â'
 
-        >>> HostAddress.validate("checkmk.com")
-        >>> HostAddress.validate("::1")
-
-        >>> HostAddress.validate("Â")
+        >>> HostAddress(".")
         Traceback (most recent call last):
             ...
-        ValueError: Invalid hostaddress: 'Â'
+        ValueError: invalid host address: '.'
         """
-        HostAddress.validate_hostname(text)
-
-    @staticmethod
-    def validate_hostname(text: str) -> str:
-        if text in ("", "_", "_VANILLA"):
-            return text
-
-        if len(text) > 254:
-            # ext4 and others allow filenames of up to 255 bytes
-            raise ValueError(f"HostName too long: {text[:16] + '…'!r}")
+        if len(text) > 240:
+            # Ext4 and others allow filenames of up to 255 bytes.
+            # As we add prefixes and/or suffixes, the number has to be way lower.
+            # 240 seems to be OK to still be able to delete a host if it causes
+            # trouble elsewhere
+            raise ValueError(f"host address too long: {text[:16] + '…'!r}")
 
         try:
             ipaddress.ip_address(text)
-            return text
         except ValueError:
-            pass
+            # TODO: Why do we want to allow empty host names?
+            if text and not HostAddress.REGEX_HOST_NAME.match(text):
+                raise ValueError(f"invalid host address: {text!r}")
 
-        if not HostAddress.REGEX_HOST_NAME.match(text):
-            raise ValueError(f"Invalid hostaddress: {text!r}")
+        return super().__new__(cls, text)
 
-        return text
-
-    @staticmethod
-    def is_valid(text: str) -> bool:
-        try:
-            HostAddress.validate(text)
-            return True
-        except ValueError:
-            return False
+    @classmethod
+    def parse(cls, x: object) -> Self:
+        if isinstance(x, cls):
+            return x
+        if isinstance(x, str):
+            return cls(x)
+        raise ValueError(f"invalid host address: {x!r}")
 
     @classmethod
     def project_valid(cls, text: str) -> Self:
@@ -108,15 +95,6 @@ class HostAddress(str):
 
         """
         return cls(cls.REGEX_INVALID_CHAR.sub("_", text))
-
-    def __new__(cls, text: str) -> Self:
-        """Construct a new HostAddress object
-
-        Raises:
-            - ValueError: whenever the given text is not a valid HostAddress
-        """
-        cls.validate(text)
-        return super().__new__(cls, text)
 
 
 # Let us be honest here, we do not actually make a difference

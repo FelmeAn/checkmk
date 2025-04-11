@@ -204,23 +204,6 @@ def _filesystem_show_levels_elements() -> list[DictionaryEntry]:
     ]
 
 
-# Note: This hack is only required on very old filesystem checks (prior August 2013)
-def _filesystem_levels_elements_hack() -> list[DictionaryEntry]:
-    return [
-        # Beware: this is a nasty hack that helps us to detect new-style parameters.
-        # Something hat has todo with float/int conversion and has not been documented
-        # by the one who implemented this.
-        (
-            "flex_levels",
-            FixedValue(
-                value=None,
-                totext="",
-                title="",
-            ),
-        ),
-    ]
-
-
 def _filesystem_reserved_elements() -> list[DictionaryEntry]:
     return [
         (
@@ -528,13 +511,9 @@ def vs_filesystem(
             FilesystemElements.size_trend,
             FilesystemElements.volume_name,
         ]
-        # some hack, see corresponding valuespec element definition
-        extra_elements += _filesystem_levels_elements_hack()
 
     dictionary_valuespec_elements = [
-        elem  #
-        for elems in [FILESYSTEM_ELEMENTS_SELECTOR[e]() for e in elements]  #
-        for elem in elems
+        elem for elems in [FILESYSTEM_ELEMENTS_SELECTOR[e]() for e in elements] for elem in elems
     ] + extra_elements
 
     if ignored_keys is None:
@@ -548,10 +527,6 @@ def vs_filesystem(
 
     return Dictionary(
         elements=dictionary_valuespec_elements,
-        hidden_keys=[
-            # some hack, see corresponding valuespec element definition
-            "flex_levels"
-        ],
         ignored_keys=ignored_keys,
         title=title,
     )

@@ -6,11 +6,12 @@
 
 This tool will modify legacy check plug-ins in place, to make them use the API `cmk.agent_based.v2`.
 It requires you to install the python library `libcst`.
-It does not require, but will attempt to call `autoflake`, `scripts/run-black` and `scripts/run-isort` on the modified file(s).
+It does not require, but will attempt to call `scripts/run-uvenv`, `scripts/run-format` and `scripts/run-sort` on the modified file(s).
 For very simple plugins, it might do the whole job, for most it will not.
 
 It's a quick and dirty, untested hacky thing.
 """
+
 import argparse
 import subprocess
 import sys
@@ -29,6 +30,10 @@ _ADDED_IMPORTS = (
         "from cmk.agent_based.v2 import Service, DiscoveryResult, CheckResult,"
         " Result, State, Metric, AgentSection, SNMPSection, SimpleSNMPSection, CheckPlugin"
     ),
+)
+
+_REMOVED = (
+    "\ncheck_info = {}\n",
 )
 
 
@@ -102,7 +107,6 @@ def _make_metrics(metric_list: cst.BaseExpression) -> Iterable[cst.Call | cst.Fr
 
 
 def _make_single_metric(element: cst.BaseExpression) -> cst.Call | cst.Name:
-
     def _make_levels_kwarg(w: cst.BaseExpression, c: cst.BaseExpression) -> Iterable[cst.Arg]:
         if (
             isinstance(w, cst.Name)
@@ -621,7 +625,7 @@ class RegistrationTransformer(cst.CSTTransformer):
                         args=(
                             cst.Arg(cst.SimpleString(f'"{section_name}"'), cst.Name("name")),
                             *(
-                                cst.Arg(kwargs[kw], cst.Name(kw))
+                                cst.Arg(kwargs[kw], cst.Name(kw), comma=cst.Comma())
                                 for kw in self.section_kwargs
                                 if kw in kwargs
                             ),
@@ -645,12 +649,13 @@ class RegistrationTransformer(cst.CSTTransformer):
                             *(
                                 cst.Arg(value, cst.Name(kw))
                                 for kw, value in kwargs.items()
-                                if kw not in self.section_kwargs
+                                if kw not in self.section_kwargs and kw != "name"
                             ),
                         ),
                     ),
                 ),
-            )
+            ),
+            leading_lines=(cst.EmptyLine(), cst.EmptyLine()),
         )
 
 
@@ -707,7 +712,12 @@ def parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def _tranform_file(content: str) -> str:
+
+    for token in _REMOVED:
+        content = content.replace(token, "")
+
     cs_tree = cst.parse_module(content)
+
     check_defs = _extract_check_defs(cs_tree)
     types_collector = SectionTypeCollector(check_defs)
     return (
@@ -728,7 +738,6 @@ def _try_to_run(*command_items: object) -> None:
 
 
 def main(argv: Sequence[str]) -> None:
-
     args = parse_arguments(argv)
 
     for file in (Path(p) for p in args.files):
@@ -740,9 +749,9 @@ def main(argv: Sequence[str]) -> None:
             if args.debug:
                 raise
 
-    _try_to_run("autoflake", "-i", "--remove-all-unused-imports", *args.files)
-    _try_to_run("scripts/run-isort", *args.files)
-    _try_to_run("scripts/run-black", *args.files)
+    _try_to_run("scripts/run-uvenv", "ruff", "check", "--fix", *args.files)
+    _try_to_run("scripts/run-sort", *args.files)
+    _try_to_run("scripts/run-format", *args.files)
 
 
 if __name__ == "__main__":

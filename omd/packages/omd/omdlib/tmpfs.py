@@ -46,7 +46,6 @@ def tmpfs_mounted(sitename: str) -> bool:
 
 def prepare_tmpfs(version_info: VersionInfo, site_name: str, tmp_dir: str, tmpfs_hook: str) -> None:
     if tmpfs_mounted(site_name):
-        sys.stdout.write("Temporary filesystem already mounted\n")
         return  # Fine: Mounted
 
     if tmpfs_hook != "on":
@@ -125,7 +124,7 @@ def unmount_tmpfs(site: SiteContext, output: bool = True, kill: bool = False) ->
     return unmount_tmpfs_without_save(site.name, site.tmp_dir, output, kill)
 
 
-def unmount_tmpfs_without_save(  # pylint: disable=too-many-branches
+def unmount_tmpfs_without_save(
     site_name: str,
     tmp_dir: str,
     output: bool,
@@ -270,8 +269,10 @@ def _restore_tmpfs_dump(site_dir: str, site_tmp_dir: str) -> None:
     Silently skipping over in case there is no dump available."""
     if not Path(site_dir, "var/omd/tmpfs-dump.tar").exists():
         return
-    with tarfile.TarFile(Path(site_dir, "var/omd/tmpfs-dump.tar")) as tar:
+    tmpfs_dump = Path(site_dir, "var/omd/tmpfs-dump.tar")
+    with tarfile.TarFile(tmpfs_dump) as tar:
         tar.extractall(site_tmp_dir, filter="data")  # nosec B202 # BNS:a7d6b8
+    tmpfs_dump.unlink()
 
 
 def prepare_and_populate_tmpfs(version_info: VersionInfo, site: SiteContext, skelroot: str) -> None:

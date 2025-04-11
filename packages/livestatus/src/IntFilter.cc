@@ -5,7 +5,10 @@
 
 #include "livestatus/IntFilter.h"
 
+#include <bitset>
 #include <cstdlib>
+#include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -83,7 +86,7 @@ std::optional<int32_t> IntFilter::greatestLowerBoundFor(
         case RelationalOperator::less:
         case RelationalOperator::less_or_equal:
             // NOTE: If we use the equivalent 'return {}' here and the other
-            // std::nullopt occurences below, we run into g++/libstdc++ bug
+            // std::nullopt occurrences below, we run into g++/libstdc++ bug
             // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=86465. :-/
             return std::nullopt;
     }

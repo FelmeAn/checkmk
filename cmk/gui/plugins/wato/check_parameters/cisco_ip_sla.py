@@ -54,7 +54,7 @@ def _parameter_valuespec_cisco_ip_sla():
             (
                 "threshold",
                 Integer(
-                    title=_("Treshold"),
+                    title=_("Threshold"),
                     help=_(
                         "Depending on the precision the unit can be "
                         "either milliseconds or micoseconds."
@@ -83,7 +83,7 @@ def _parameter_valuespec_cisco_ip_sla():
             (
                 "connection_lost_occured",
                 DropdownChoice(
-                    title=_("Connection lost occured"),
+                    title=_("Connection lost occurred"),
                     choices=[
                         ("yes", _("yes")),
                         ("no", _("no")),
@@ -94,7 +94,7 @@ def _parameter_valuespec_cisco_ip_sla():
             (
                 "timeout_occured",
                 DropdownChoice(
-                    title=_("Timeout occured"),
+                    title=_("Timeout occurred"),
                     choices=[
                         ("yes", _("yes")),
                         ("no", _("no")),
@@ -105,7 +105,7 @@ def _parameter_valuespec_cisco_ip_sla():
             (
                 "completion_time_over_treshold_occured",
                 DropdownChoice(
-                    title=_("Completion time over treshold occured"),
+                    title=_("Completion time over threshold occurred"),
                     choices=[
                         ("yes", _("yes")),
                         ("no", _("no")),
@@ -144,7 +144,7 @@ def _parameter_valuespec_cisco_ip_sla():
                     choices=[
                         ("ok", _("OK")),
                         ("disconnected", _("disconnected")),
-                        ("over treshold", _("over treshold")),
+                        ("over treshold", _("over threshold")),
                         ("timeout", _("timeout")),
                         ("other", _("other")),
                     ],

@@ -3,7 +3,6 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
 
 import logging
 
@@ -12,7 +11,10 @@ from pytest_mock import MockerFixture
 
 from cmk.gui.plugins.wato.utils import ConfigVariableGroupUserInterface
 from cmk.gui.valuespec import TextInput, Transform
-from cmk.gui.watolib.config_domain_name import ConfigVariable, ConfigVariableRegistry
+from cmk.gui.watolib.config_domain_name import (
+    ConfigVariable,
+    ConfigVariableRegistry,
+)
 from cmk.gui.watolib.config_domains import ConfigDomainGUI
 
 from cmk.update_config.plugins.actions import global_settings
@@ -27,18 +29,12 @@ def test_update_global_config_transform_values(
         global_settings, "filter_unknown_settings", lambda global_config: global_config
     )
 
-    class ConfigVariableKey(ConfigVariable):
-        def group(self) -> type[ConfigVariableGroupUserInterface]:
-            return ConfigVariableGroupUserInterface
-
-        def domain(self) -> type[ConfigDomainGUI]:
-            return ConfigDomainGUI
-
-        def ident(self) -> str:
-            return "key"
-
-        def valuespec(self) -> Transform:
-            return Transform(TextInput(), forth=lambda x: "new" if x == "old" else x)
+    ConfigVariableKey = ConfigVariable(
+        group=ConfigVariableGroupUserInterface,
+        domain=ConfigDomainGUI,
+        ident="key",
+        valuespec=lambda: Transform(TextInput(), forth=lambda x: "new" if x == "old" else x),
+    )
 
     registry = ConfigVariableRegistry()
     registry.register(ConfigVariableKey)

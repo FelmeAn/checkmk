@@ -4,10 +4,10 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 
-from cmk.base.check_api import LegacyCheckDefinition
-from cmk.base.config import check_info
-
+from cmk.agent_based.legacy.v0_unstable import LegacyCheckDefinition
 from cmk.agent_based.v2 import StringTable
+
+check_info = {}
 
 
 def inventory_plesk_domains(info):
@@ -19,7 +19,7 @@ def inventory_plesk_domains(info):
 def check_plesk_domains(_no_item, _no_params, info):
     if not info:
         return (1, "No domains configured")
-    return (0, "%s" % ",<br>".join([i[0] for i in info]))
+    return (0, "%s" % ",\n".join([i[0] for i in info]))
 
 
 def parse_plesk_domains(string_table: StringTable) -> StringTable:
@@ -27,6 +27,7 @@ def parse_plesk_domains(string_table: StringTable) -> StringTable:
 
 
 check_info["plesk_domains"] = LegacyCheckDefinition(
+    name="plesk_domains",
     parse_function=parse_plesk_domains,
     service_name="Plesk Domains",
     discovery_function=inventory_plesk_domains,

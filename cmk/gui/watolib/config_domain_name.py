@@ -8,10 +8,14 @@ from __future__ import annotations
 import abc
 import os
 import pprint
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TypedDict
+
+import cmk.ccc.plugin_registry
+from cmk.ccc import store
+from cmk.ccc.exceptions import MKGeneralException
 
 from cmk.utils.config_warnings import ConfigurationWarnings
 from cmk.utils.hostaddress import HostName
@@ -20,19 +24,15 @@ from cmk.gui.hooks import request_memoize
 from cmk.gui.i18n import _
 from cmk.gui.type_defs import GlobalSettings
 from cmk.gui.utils.html import HTML
+from cmk.gui.utils.speaklater import LazyString
 from cmk.gui.valuespec import ValueSpec
 from cmk.gui.watolib.site_changes import ChangeSpec
-
-import cmk.ccc.plugin_registry
-from cmk.ccc import store
-from cmk.ccc.exceptions import MKGeneralException
 
 ConfigDomainName = str
 
 CORE: Final[ConfigDomainName] = "check_mk"
 GUI: Final[ConfigDomainName] = "multisite"
 LIVEPROXY: Final[ConfigDomainName] = "liveproxyd"
-EVENT_CONSOLE: Final[ConfigDomainName] = "ec"
 CA_CERTIFICATES: Final[ConfigDomainName] = "ca-certificates"
 OMD: Final[ConfigDomainName] = "omd"
 
@@ -41,14 +41,18 @@ def wato_fileheader() -> str:
     return "# Created by WATO\n\n"
 
 
-SerializedSettings = Mapping[str, Any]
+class SerializedSettings(TypedDict, total=False):
+    hosts_to_update: Sequence[HostName]
+    need_apache_reload: bool
+
+
 DomainSettings = Mapping[ConfigDomainName, SerializedSettings]
 
 
 @dataclass
 class DomainRequest:
     name: str
-    settings: SerializedSettings = field(default_factory=dict)
+    settings: SerializedSettings = field(default_factory=lambda: SerializedSettings(dict()))
 
 
 DomainRequests = Sequence[DomainRequest]
@@ -73,7 +77,7 @@ class ABCConfigDomain(abc.ABC):
     def ident(cls) -> ConfigDomainName: ...
 
     @classmethod
-    def enabled_domains(cls) -> Sequence[type[ABCConfigDomain]]:
+    def enabled_domains(cls) -> Sequence[ABCConfigDomain]:
         return [d for d in config_domain_registry.values() if d.enabled()]
 
     @abc.abstractmethod
@@ -81,27 +85,25 @@ class ABCConfigDomain(abc.ABC):
         raise MKGeneralException(_('The domain "%s" does not support activation.') % self.ident())
 
     @classmethod
-    def get_class(cls, ident: str) -> type[ABCConfigDomain]:
-        return config_domain_registry[ident]
-
-    @classmethod
     def enabled(cls) -> bool:
         return True
 
     @classmethod
-    def get_all_default_globals(cls) -> Mapping[str, Any]:
+    def get_all_default_globals(cls) -> GlobalSettings:
         return _get_all_default_globals()
 
     @abc.abstractmethod
-    def config_dir(self):
+    def config_dir(self) -> str:
         raise NotImplementedError()
 
-    def config_file(self, site_specific):
+    def config_file(self, site_specific: bool) -> str:
         if site_specific:
             return os.path.join(self.config_dir(), "sitespecific.mk")
         return os.path.join(self.config_dir(), "global.mk")
 
-    def load_full_config(self, site_specific=False, custom_site_path=None):
+    def load_full_config(
+        self, site_specific: bool = False, custom_site_path: str | None = None
+    ) -> GlobalSettings:
         filename = Path(self.config_file(site_specific))
         if custom_site_path:
             filename = Path(custom_site_path) / filename.relative_to(cmk.utils.paths.omd_root)
@@ -120,13 +122,20 @@ class ABCConfigDomain(abc.ABC):
         except Exception as e:
             raise MKGeneralException(_("Cannot read configuration file %s: %s") % (filename, e))
 
-    def load(self, site_specific=False, custom_site_path=None):
+    def load(
+        self, site_specific: bool = False, custom_site_path: str | None = None
+    ) -> GlobalSettings:
         return filter_unknown_settings(self.load_full_config(site_specific, custom_site_path))
 
-    def load_site_globals(self, custom_site_path=None):
+    def load_site_globals(self, custom_site_path: str | None = None) -> GlobalSettings:
         return self.load(site_specific=True, custom_site_path=custom_site_path)
 
-    def save(self, settings, site_specific=False, custom_site_path=None):
+    def save(
+        self,
+        settings: GlobalSettings,
+        site_specific: bool = False,
+        custom_site_path: str | None = None,
+    ) -> None:
         filename = self.config_file(site_specific)
         if custom_site_path:
             filename = os.path.join(
@@ -140,11 +149,13 @@ class ABCConfigDomain(abc.ABC):
         store.makedirs(os.path.dirname(filename))
         store.save_text_to_file(filename, output)
 
-    def save_site_globals(self, settings, custom_site_path=None):
+    def save_site_globals(
+        self, settings: GlobalSettings, custom_site_path: str | None = None
+    ) -> None:
         self.save(settings, site_specific=True, custom_site_path=custom_site_path)
 
     @abc.abstractmethod
-    def default_globals(self) -> Mapping[str, Any]:
+    def default_globals(self) -> GlobalSettings:
         """Returns a dictionary that contains the default settings
         of all configuration variables of this config domain."""
         raise NotImplementedError()
@@ -155,7 +166,7 @@ class ABCConfigDomain(abc.ABC):
         return [
             varname
             for (varname, v) in config_variable_registry.items()
-            if v().domain() == self.__class__
+            if v.domain().ident() == self.ident()
         ]
 
     @classmethod
@@ -166,32 +177,36 @@ class ABCConfigDomain(abc.ABC):
     def get_domain_request(cls, settings: list[SerializedSettings]) -> DomainRequest:
         return DomainRequest(cls.ident())
 
+    @classmethod
+    def hint(cls) -> HTML:
+        return HTML.empty()
+
 
 @request_memoize()
-def _get_all_default_globals() -> dict[str, Any]:
+def _get_all_default_globals() -> GlobalSettings:
     settings: dict[str, Any] = {}
     for domain in ABCConfigDomain.enabled_domains():
-        settings.update(domain().default_globals())
+        settings.update(domain.default_globals())
     return settings
 
 
-def get_config_domain(domain_ident: ConfigDomainName) -> type[ABCConfigDomain]:
+def get_config_domain(domain_ident: ConfigDomainName) -> ABCConfigDomain:
     return config_domain_registry[domain_ident]
 
 
-def get_always_activate_domains() -> Sequence[type[ABCConfigDomain]]:
+def get_always_activate_domains() -> Sequence[ABCConfigDomain]:
     return [d for d in config_domain_registry.values() if d.always_activate]
 
 
-class ConfigDomainRegistry(cmk.ccc.plugin_registry.Registry[type[ABCConfigDomain]]):
-    def plugin_name(self, instance: type[ABCConfigDomain]) -> str:
+class ConfigDomainRegistry(cmk.ccc.plugin_registry.Registry[ABCConfigDomain]):
+    def plugin_name(self, instance: ABCConfigDomain) -> str:
         return instance.ident()
 
 
 config_domain_registry = ConfigDomainRegistry()
 
 
-def generate_hosts_to_update_settings(hostnames: Iterable[HostName]) -> SerializedSettings:
+def generate_hosts_to_update_settings(hostnames: Sequence[HostName]) -> SerializedSettings:
     return {"hosts_to_update": hostnames}
 
 
@@ -241,6 +256,13 @@ sample_config_generator_registry = SampleConfigGeneratorRegistry()
 
 
 class ConfigVariableGroup:
+    def __init__(
+        self, *, title: LazyString, sort_index: int, warning: LazyString | None = None
+    ) -> None:
+        self._title = title
+        self._sort_index = sort_index
+        self._warning = warning
+
     # TODO: The identity of a configuration variable group should be a pure
     # internal unique key and it should not be localized. The title of a
     # group was always used as identity. Check all call sites and introduce
@@ -248,49 +270,74 @@ class ConfigVariableGroup:
     # effects.
     def ident(self) -> str:
         """Unique internal key of this group"""
-        return self.title()
+        return str(self._title)
 
     def title(self) -> str:
         """Human readable title of this group"""
-        raise NotImplementedError()
+        return str(self._title)
 
     def sort_index(self) -> int:
         """Returns an integer to control the sorting of the groups in lists"""
-        raise NotImplementedError()
-
-    def config_variables(self) -> list[type[ConfigVariable]]:
-        """Returns a list of configuration variable classes that belong to this group"""
-        return [v for v in config_variable_registry.values() if v().group() == self.__class__]
+        return self._sort_index
 
     def warning(self) -> str | None:
         """Return a string if you want to show a warning at the top of this group"""
-        return None
+        return str(self._warning) if self._warning else None
+
+    def config_variables(self) -> list[ConfigVariable]:
+        """Returns a list of configuration variable classes that belong to this group"""
+        return [v for v in config_variable_registry.values() if v.group() == self]
 
 
-class ConfigVariableGroupRegistry(cmk.ccc.plugin_registry.Registry[type[ConfigVariableGroup]]):
-    def plugin_name(self, instance):
-        return instance().ident()
+class ConfigVariableGroupRegistry(cmk.ccc.plugin_registry.Registry[ConfigVariableGroup]):
+    def plugin_name(self, instance: ConfigVariableGroup) -> str:
+        return instance.ident()
 
 
 config_variable_group_registry = ConfigVariableGroupRegistry()
 
 
 class ConfigVariable:
-    def group(self) -> type[ConfigVariableGroup]:
-        """Returns the class of the configuration variable group this configuration variable belongs to"""
-        raise NotImplementedError()
+    def __init__(
+        self,
+        *,
+        group: ConfigVariableGroup,
+        domain: type[ABCConfigDomain],
+        ident: str,
+        valuespec: Callable[[], ValueSpec],
+        need_restart: bool | None = None,
+        need_apache_reload: bool = False,
+        allow_reset: bool = True,
+        in_global_settings: bool = True,
+        hint: Callable[[], HTML] = lambda: HTML.empty(),
+        domain_hint: HTML = HTML.empty(),
+    ) -> None:
+        self._group = group
+        self._domain_ident = domain.ident()
+        self._ident = ident
+        self._valuespec_func = valuespec
+        self._need_restart = need_restart
+        self._need_apache_reload = need_apache_reload
+        self._allow_reset = allow_reset
+        self._in_global_settings = in_global_settings
+        self._hint_func = hint
+        self._domain_hint = domain_hint
+
+    def group(self) -> ConfigVariableGroup:
+        """Returns the the configuration variable group this configuration variable belongs to"""
+        return self._group
 
     def ident(self) -> str:
         """Returns the internal identifier of this configuration variable"""
-        raise NotImplementedError()
+        return self._ident
 
     def valuespec(self) -> ValueSpec:
         """Returns the valuespec object of this configuration variable"""
-        raise NotImplementedError()
+        return self._valuespec_func()
 
-    def domain(self) -> type[ABCConfigDomain]:
-        """Returns the class of the config domain this configuration variable belongs to"""
-        return config_domain_registry["check_mk"]
+    def domain(self) -> ABCConfigDomain:
+        """Returns the config domain this configuration variable belongs to"""
+        return config_domain_registry[self._domain_ident]
 
     # TODO: This is boolean flag which defaulted to None in case a variable declaration did not
     # provide this attribute.
@@ -299,24 +346,31 @@ class ConfigVariable:
     # - Can't we simplify this to simply be a boolean?
     def need_restart(self) -> bool | None:
         """Whether or not a change to this setting enforces a "restart" during activate changes instead of just a synchronization"""
-        return None
+        return self._need_restart
+
+    def need_apache_reload(self) -> bool:
+        """Whether a change to this setting enforces an apache reload, this currently only works when using the ConfigDomainGUI"""
+        return self._need_apache_reload
 
     # TODO: Investigate: Which use cases do we have here? Can this be dropped?
     def allow_reset(self) -> bool:
         """Whether or not the user is allowed to change this setting to factory settings"""
-        return True
+        return self._allow_reset
 
     def in_global_settings(self) -> bool:
         """Whether or not to show this option on the global settings page"""
-        return True
+        return self._in_global_settings
 
     def hint(self) -> HTML:
-        return HTML.empty()
+        return self._hint_func()
+
+    def domain_hint(self) -> HTML:
+        return self._domain_hint
 
 
-class ConfigVariableRegistry(cmk.ccc.plugin_registry.Registry[type[ConfigVariable]]):
-    def plugin_name(self, instance):
-        return instance().ident()
+class ConfigVariableRegistry(cmk.ccc.plugin_registry.Registry[ConfigVariable]):
+    def plugin_name(self, instance: ConfigVariable) -> str:
+        return instance.ident()
 
 
 config_variable_registry = ConfigVariableRegistry()
@@ -366,17 +420,14 @@ def register_configvar(
     if isinstance(group, str):
         group = config_variable_group_registry[group]
 
-    cls = type(
-        "LegacyConfigVariable%s" % varname.title(),
-        (ConfigVariable,),
-        {
-            "group": lambda self: group,
-            "ident": lambda self: varname,
-            "valuespec": lambda self: valuespec,
-            "domain": lambda self: domain,
-            "need_restart": lambda self: need_restart,
-            "allow_reset": lambda self: allow_reset,
-            "in_global_settings": lambda self: in_global_settings,
-        },
+    config_variable_registry.register(
+        ConfigVariable(
+            ident=varname,
+            group=group,
+            domain=domain,
+            valuespec=valuespec,
+            need_restart=need_restart,
+            allow_reset=allow_reset,
+            in_global_settings=in_global_settings,
+        )
     )
-    config_variable_registry.register(cls)

@@ -3,7 +3,6 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
 
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -11,29 +10,18 @@ from typing import Any
 import pytest
 from pytest import MonkeyPatch
 
-from tests.testlib.base import Scenario
+from tests.testlib.unit.base_configuration_scenario import Scenario
 
 from cmk.utils.hostaddress import HostName
 from cmk.utils.rulesets.ruleset_matcher import (
-    LabelManager,
     matches_tag_condition,
     RuleConditionsSpec,
     RulesetMatcher,
-    RulesetMatchObject,
     RuleSpec,
     TagCondition,
 )
 from cmk.utils.servicename import ServiceName
 from cmk.utils.tags import TagConfig, TagGroupID, TagID
-
-from cmk.checkengine.checking import CheckPluginName
-from cmk.checkengine.discovery import AutocheckEntry
-
-
-def test_ruleset_match_object_host_name() -> None:
-    obj = RulesetMatchObject(host_name=HostName("abc"), service_description=None)
-    assert obj.host_name == "abc"
-
 
 ruleset: Sequence[RuleSpec[str]] = [
     {
@@ -90,9 +78,18 @@ host_label_ruleset: Sequence[RuleSpec[str]] = [
         },
         "options": {},
     },
-    # test implicit AND and unicode value match
+    # test overwritten builtin label match
     {
         "id": "id1",
+        "value": "some_other_site",
+        "condition": {
+            "host_label_groups": [("and", [("and", "cmk/site:some_site")])],
+        },
+        "options": {},
+    },
+    # test implicit AND and unicode value match
+    {
+        "id": "id2",
         "value": "abc",
         "condition": {
             "host_label_groups": [
@@ -109,7 +106,7 @@ host_label_ruleset: Sequence[RuleSpec[str]] = [
     },
     # test negation of label
     {
-        "id": "id2",
+        "id": "id3",
         "value": "hu",
         "condition": {
             "host_label_groups": [("and", [("not", "hu:ha")])],
@@ -118,7 +115,7 @@ host_label_ruleset: Sequence[RuleSpec[str]] = [
     },
     # test unconditional match
     {
-        "id": "id3",
+        "id": "id4",
         "value": "BLA",
         "condition": {},
         "options": {},
@@ -130,107 +127,36 @@ host_label_ruleset: Sequence[RuleSpec[str]] = [
     "hostname, expected_result",
     [
         (HostName("host1"), ["os_linux", "abc", "BLA"]),
-        (HostName("host2"), ["hu", "BLA"]),
+        (HostName("host2"), ["some_other_site", "hu", "BLA"]),
+        (HostName("host3"), ["hu", "BLA"]),
     ],
 )
 def test_ruleset_matcher_get_host_values_labels(
     hostname: HostName, expected_result: Sequence[str]
 ) -> None:
     matcher = RulesetMatcher(
-        host_tags={HostName("host1"): {}, HostName("host2"): {}},
+        host_tags={HostName("host1"): {}, HostName("host2"): {}, HostName("host3"): {}},
         host_paths={},
-        label_manager=LabelManager(
-            explicit_host_labels={
-                HostName("host1"): {"os": "linux", "abc": "xä", "hu": "ha"},
-                HostName("host2"): {},
-            },
-            host_label_rules=(),
-            service_label_rules=(),
-            discovered_labels_of_service=lambda *args, **kw: {},
-        ),
-        all_configured_hosts=[HostName("host1"), HostName("host2")],
+        all_configured_hosts=frozenset([HostName("host1"), HostName("host2"), HostName("host3")]),
         clusters_of={},
         nodes_of={},
     )
 
-    assert list(matcher.get_host_values(hostname, ruleset=host_label_ruleset)) == expected_result
+    def labels_of_host(hostname: HostName) -> Mapping[str, str]:
+        return {
+            HostName("host1"): {"os": "linux", "abc": "xä", "hu": "ha"},
+            HostName("host2"): {"cmk/site": "some_site"},
+            HostName("host3"): {},
+        }[hostname]
 
-
-def test_labels_of_service(monkeypatch: MonkeyPatch) -> None:
-    test_host = HostName("test-host")
-    xyz_host = HostName("xyz")
-    ruleset_matcher = RulesetMatcher(
-        host_tags={test_host: {TagGroupID("agent"): TagID("no-agent")}, xyz_host: {}},
-        host_paths={},
-        label_manager=LabelManager(
-            explicit_host_labels={},
-            host_label_rules=(),
-            service_label_rules=[
-                {
-                    "condition": {
-                        "service_description": [{"$regex": "CPU load$"}],
-                        "host_tags": {TagGroupID("agent"): TagID("no-agent")},
-                    },
-                    "id": "01",
-                    "value": {"label1": "val1"},
-                },
-                {
-                    "condition": {
-                        "service_description": [{"$regex": "CPU load$"}],
-                        "host_tags": {TagGroupID("agent"): TagID("no-agent")},
-                    },
-                    "id": "02",
-                    "value": {"label2": "val2"},
-                },
-            ],
-            discovered_labels_of_service=lambda *args, **kw: {},
-        ),
-        all_configured_hosts=[test_host, xyz_host],
-        clusters_of={},
-        nodes_of={},
+    assert (
+        list(
+            matcher.get_host_values(
+                hostname, ruleset=host_label_ruleset, labels_of_host=labels_of_host
+            )
+        )
+        == expected_result
     )
-
-    assert not ruleset_matcher.labels_of_service(xyz_host, "CPU load")
-    assert not ruleset_matcher.label_sources_of_service(xyz_host, "CPU load")
-
-    assert ruleset_matcher.labels_of_service(test_host, "CPU load") == {
-        "label1": "val1",
-        "label2": "val2",
-    }
-    assert ruleset_matcher.label_sources_of_service(test_host, "CPU load") == {
-        "label1": "ruleset",
-        "label2": "ruleset",
-    }
-
-
-def test_labels_of_service_discovered_labels() -> None:
-    test_host = HostName("test-host")
-    xyz_host = HostName("xyz")
-    ruleset_matcher = RulesetMatcher(
-        host_tags={test_host: {}},
-        host_paths={},
-        label_manager=LabelManager(
-            explicit_host_labels={},
-            host_label_rules=(),
-            service_label_rules=(),
-            discovered_labels_of_service=(
-                lambda host_name, *args, **kw: {"äzzzz": "eeeeez"} if host_name == test_host else {}
-            ),
-        ),
-        all_configured_hosts=[test_host],
-        clusters_of={},
-        nodes_of={},
-    )
-
-    service_description = "CPU load"
-
-    assert not ruleset_matcher.labels_of_service(xyz_host, "CPU load")
-    assert not ruleset_matcher.label_sources_of_service(xyz_host, "CPU load")
-
-    assert ruleset_matcher.labels_of_service(test_host, service_description) == {"äzzzz": "eeeeez"}
-    assert ruleset_matcher.label_sources_of_service(test_host, service_description) == {
-        "äzzzz": "discovered"
-    }
 
 
 def test_basic_get_host_values() -> None:
@@ -242,29 +168,33 @@ def test_basic_get_host_values() -> None:
             HostName("host2"): {},
         },
         host_paths={},
-        label_manager=LabelManager(
-            explicit_host_labels={},
-            host_label_rules=(),
-            service_label_rules=(),
-            discovered_labels_of_service=lambda *args, **kw: {},
+        all_configured_hosts=frozenset(
+            [
+                HostName("abc"),
+                HostName("xyz"),
+                HostName("host1"),
+                HostName("host2"),
+            ]
         ),
-        all_configured_hosts=[
-            HostName("abc"),
-            HostName("xyz"),
-            HostName("host1"),
-            HostName("host2"),
-        ],
         clusters_of={},
         nodes_of={},
     )
 
-    assert not list(matcher.get_host_values(HostName("abc"), ruleset=ruleset))
-    assert not list(matcher.get_host_values(HostName("xyz"), ruleset=ruleset))
-    assert list(matcher.get_host_values(HostName("host1"), ruleset=ruleset)) == [
+    assert not list(
+        matcher.get_host_values(HostName("abc"), ruleset=ruleset, labels_of_host=lambda hn: {})
+    )
+    assert not list(
+        matcher.get_host_values(HostName("xyz"), ruleset=ruleset, labels_of_host=lambda hn: {})
+    )
+    assert list(
+        matcher.get_host_values(HostName("host1"), ruleset=ruleset, labels_of_host=lambda hn: {})
+    ) == [
         "BLA",
         "BLUB",
     ]
-    assert list(matcher.get_host_values(HostName("host2"), ruleset=ruleset)) == ["BLUB"]
+    assert list(
+        matcher.get_host_values(HostName("host2"), ruleset=ruleset, labels_of_host=lambda hn: {})
+    ) == ["BLUB"]
 
 
 def test_basic_get_host_values_subfolders() -> None:
@@ -281,30 +211,34 @@ def test_basic_get_host_values_subfolders() -> None:
             HostName("lvl2"): "/lvl1/lvl2/hosts.mk",
             HostName("lvl1a"): "/lvl1_a/hosts.mk",
         },
-        label_manager=LabelManager(
-            explicit_host_labels={},
-            host_label_rules=(),
-            service_label_rules=(),
-            discovered_labels_of_service=lambda *args, **kw: {},
+        all_configured_hosts=frozenset(
+            [
+                HostName("abc"),
+                HostName("xyz"),
+                HostName("lvl1"),
+                HostName("lvl2"),
+                HostName("lvl1a"),
+            ]
         ),
-        all_configured_hosts=[
-            HostName("abc"),
-            HostName("xyz"),
-            HostName("lvl1"),
-            HostName("lvl2"),
-            HostName("lvl1a"),
-        ],
         clusters_of={},
         nodes_of={},
     )
 
-    assert not list(matcher.get_host_values(HostName("xyz"), ruleset=ruleset))
-    assert list(matcher.get_host_values(HostName("lvl1"), ruleset=ruleset)) == ["LEVEL1"]
-    assert list(matcher.get_host_values(HostName("lvl2"), ruleset=ruleset)) == [
+    assert not list(
+        matcher.get_host_values(HostName("xyz"), ruleset=ruleset, labels_of_host=lambda hn: {})
+    )
+    assert list(
+        matcher.get_host_values(HostName("lvl1"), ruleset=ruleset, labels_of_host=lambda hn: {})
+    ) == ["LEVEL1"]
+    assert list(
+        matcher.get_host_values(HostName("lvl2"), ruleset=ruleset, labels_of_host=lambda hn: {})
+    ) == [
         "LEVEL1",
         "LEVEL2",
     ]
-    assert not list(matcher.get_host_values(HostName("lvl1a"), ruleset=ruleset))
+    assert not list(
+        matcher.get_host_values(HostName("lvl1a"), ruleset=ruleset, labels_of_host=lambda hn: {})
+    )
 
 
 dict_ruleset: Sequence[RuleSpec[Mapping[str, str]]] = [
@@ -357,30 +291,34 @@ def test_basic_host_ruleset_get_merged_dict_values() -> None:
             HostName("host2"): {},
         },
         host_paths={},
-        label_manager=LabelManager(
-            explicit_host_labels={},
-            host_label_rules=(),
-            service_label_rules=(),
-            discovered_labels_of_service=lambda *args, **kw: {},
+        all_configured_hosts=frozenset(
+            [
+                HostName("abc"),
+                HostName("xyz"),
+                HostName("host1"),
+                HostName("host2"),
+            ]
         ),
-        all_configured_hosts=[
-            HostName("abc"),
-            HostName("xyz"),
-            HostName("host1"),
-            HostName("host2"),
-        ],
         clusters_of={},
         nodes_of={},
     )
 
-    assert not matcher.get_host_merged_dict(HostName("abc"), ruleset=dict_ruleset)
-    assert not matcher.get_host_merged_dict(HostName("xyz"), ruleset=dict_ruleset)
-    assert matcher.get_host_merged_dict(HostName("host1"), ruleset=dict_ruleset) == {
+    assert not matcher.get_host_merged_dict(
+        HostName("abc"), ruleset=dict_ruleset, labels_of_host=lambda hn: {}
+    )
+    assert not matcher.get_host_merged_dict(
+        HostName("xyz"), ruleset=dict_ruleset, labels_of_host=lambda hn: {}
+    )
+    assert matcher.get_host_merged_dict(
+        HostName("host1"), ruleset=dict_ruleset, labels_of_host=lambda hn: {}
+    ) == {
         "hu": "BLA",
         "ho": "BLA",
         "he": "BLUB",
     }
-    assert matcher.get_host_merged_dict(HostName("host2"), ruleset=dict_ruleset) == {
+    assert matcher.get_host_merged_dict(
+        HostName("host2"), ruleset=dict_ruleset, labels_of_host=lambda hn: {}
+    ) == {
         "hu": "BLUB",
         "ho": "BLA",
         "he": "BLUB",
@@ -432,26 +370,42 @@ def test_basic_host_ruleset_get_host_bool_value() -> None:
             HostName("host2"): {},
         },
         host_paths={},
-        label_manager=LabelManager(
-            explicit_host_labels={},
-            host_label_rules=(),
-            service_label_rules=(),
-            discovered_labels_of_service=lambda *args, **kw: {},
+        all_configured_hosts=frozenset(
+            [
+                HostName("abc"),
+                HostName("xyz"),
+                HostName("host1"),
+                HostName("host2"),
+            ]
         ),
-        all_configured_hosts=[
-            HostName("abc"),
-            HostName("xyz"),
-            HostName("host1"),
-            HostName("host2"),
-        ],
         clusters_of={},
         nodes_of={},
     )
 
-    assert matcher.get_host_bool_value(HostName("abc"), ruleset=binary_ruleset) is False
-    assert matcher.get_host_bool_value(HostName("xyz"), ruleset=binary_ruleset) is False
-    assert matcher.get_host_bool_value(HostName("host1"), ruleset=binary_ruleset) is True
-    assert matcher.get_host_bool_value(HostName("host2"), ruleset=binary_ruleset) is False
+    assert (
+        matcher.get_host_bool_value(
+            HostName("abc"), ruleset=binary_ruleset, labels_of_host=lambda x: {}
+        )
+        is False
+    )
+    assert (
+        matcher.get_host_bool_value(
+            HostName("xyz"), ruleset=binary_ruleset, labels_of_host=lambda x: {}
+        )
+        is False
+    )
+    assert (
+        matcher.get_host_bool_value(
+            HostName("host1"), ruleset=binary_ruleset, labels_of_host=lambda x: {}
+        )
+        is True
+    )
+    assert (
+        matcher.get_host_bool_value(
+            HostName("host2"), ruleset=binary_ruleset, labels_of_host=lambda x: {}
+        )
+        is False
+    )
 
 
 tag_ruleset: Sequence[RuleSpec[str]] = [
@@ -555,21 +509,20 @@ def test_ruleset_matcher_get_host_values_tags(
             },
         },
         host_paths={},
-        label_manager=LabelManager(
-            explicit_host_labels={},
-            host_label_rules=(),
-            service_label_rules=(),
-            discovered_labels_of_service=lambda *args, **kw: {},
+        all_configured_hosts=frozenset(
+            [
+                HostName("host1"),
+                HostName("host2"),
+                HostName("host3"),
+            ]
         ),
-        all_configured_hosts=[
-            HostName("host1"),
-            HostName("host2"),
-            HostName("host3"),
-        ],
         clusters_of={},
         nodes_of={},
     )
-    assert list(matcher.get_host_values(hostname, ruleset=tag_ruleset)) == expected_result
+    assert (
+        list(matcher.get_host_values(hostname, ruleset=tag_ruleset, labels_of_host=lambda hn: {}))
+        == expected_result
+    )
 
 
 @pytest.mark.parametrize(
@@ -652,7 +605,11 @@ def test_ruleset_matcher_get_host_values_tags_duplicate_ids(
 
     assert (
         list(
-            matcher.get_host_values(HostName("host"), ruleset=[rule_spec])  # type: ignore[arg-type]
+            matcher.get_host_values(
+                HostName("host"),
+                ruleset=[rule_spec],  # type: ignore[arg-type]
+                labels_of_host=config_cache.label_manager.labels_of_host,
+            )
         )
         == expected_result
     )
@@ -718,46 +675,30 @@ def test_ruleset_matcher_get_service_ruleset_values_labels(
     service_description: ServiceName,
     expected_result: Sequence[str],
 ) -> None:
+    discovered_labels = (
+        {
+            "os": "linux",
+            "abc": "xä",
+            "hu": "ha",
+        }
+        if hostname == HostName("host1")
+        else {}
+    )
+
     ts = Scenario()
-
     ts.add_host(HostName("host1"))
-    ts.set_autochecks(
-        HostName("host1"),
-        [
-            AutocheckEntry(
-                CheckPluginName("cpu_load"),
-                None,
-                {},
-                {
-                    "os": "linux",
-                    "abc": "xä",
-                    "hu": "ha",
-                },
-            )
-        ],
-    )
-
     ts.add_host(HostName("host2"))
-    ts.set_autochecks(
-        HostName("host2"),
-        [
-            AutocheckEntry(
-                CheckPluginName("cpu_load"),
-                None,
-                {},
-                {},
-            ),
-        ],
-    )
-
     config_cache = ts.apply(monkeypatch)
     matcher = config_cache.ruleset_matcher
 
     assert (
         list(
-            matcher.get_service_ruleset_values(
-                matcher._service_match_object(hostname, service_description),
+            matcher._get_service_ruleset_values(
+                hostname,
+                service_description,
+                discovered_labels,
                 ruleset=service_label_ruleset,
+                labels_of_host=config_cache.label_manager.labels_of_host,
             )
         )
         == expected_result

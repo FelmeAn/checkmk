@@ -3,17 +3,46 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+from cmk.utils.hostaddress import HostAddress
+from cmk.utils.rulesets import RuleSetName
 from cmk.utils.servicename import ServiceName
 
 from cmk.checkengine.checking import (
-    AggregatedResult,
+    ABCCheckingConfig,
     check_plugins_missing_data,
-    CheckPluginName,
-    ConfiguredService,
+    merge_enforced_services,
+    ServiceConfigurer,
 )
 from cmk.checkengine.checkresults import UnsubmittableServiceCheckResult
 from cmk.checkengine.exitspec import ExitSpec
-from cmk.checkengine.parameters import TimespecificParameters
+from cmk.checkengine.parameters import TimespecificParameters, TimespecificParameterSet
+from cmk.checkengine.plugins import (
+    AggregatedResult,
+    CheckPlugin,
+    CheckPluginName,
+    ConfiguredService,
+    ServiceID,
+)
+
+from cmk.discover_plugins import PluginLocation
+
+_DUMMY_DF_PLUGIN = CheckPlugin(
+    name=CheckPluginName("df"),
+    sections=[],
+    service_name="My df service for %s",
+    discovery_function=lambda *a: iter(()),
+    discovery_default_parameters={},
+    discovery_ruleset_name=None,
+    discovery_ruleset_type="merged",
+    check_function=lambda *a: iter(()),
+    check_default_parameters={},
+    check_ruleset_name=RuleSetName("my_df_ruleset_name"),
+    cluster_check_function=None,
+    location=PluginLocation("never", "used"),
+)
 
 
 def _service(plugin: str, item: str | None) -> ConfiguredService:
@@ -23,7 +52,8 @@ def _service(plugin: str, item: str | None) -> ConfiguredService:
         description=f"test description {plugin}/{item}",
         parameters=TimespecificParameters(),
         discovered_parameters={},
-        service_labels={},
+        discovered_labels={},
+        labels={},
         is_enforced=False,
     )
 
@@ -53,7 +83,8 @@ def make_aggregated_result(*, name: str, data_received: bool) -> AggregatedResul
             description=ServiceName("ut_service_name"),
             parameters=TimespecificParameters(),
             discovered_parameters={},
-            service_labels={},
+            discovered_labels={},
+            labels={},
             is_enforced=False,
         ),
         data_received=data_received,
@@ -154,3 +185,127 @@ def test_missing_data_regex_and_default() -> None:
         (3, "not_2"),
         (0, "not_3"),
     ]
+
+
+@dataclass
+class AutocheckEntryLike:
+    check_plugin_name: CheckPluginName
+    item: str | None
+    parameters: Mapping[str, str]
+    service_labels: Mapping[str, str]
+
+
+class _CheckingConfig(ABCCheckingConfig):
+    def __call__(self, *args: object) -> Sequence[Mapping[str, object]]:
+        return ({"configured": 42},)
+
+
+def test_service_configurer() -> None:
+    service_configurer = ServiceConfigurer(
+        checking_config=_CheckingConfig(),
+        plugins={CheckPluginName("df"): _DUMMY_DF_PLUGIN},
+        get_service_description=lambda _host, check, item: f"{check}-{item}",
+        get_effective_host=lambda host, _desc, _labels: host,
+        get_service_labels=lambda _host, _desc, labels: labels,
+    )
+
+    assert (
+        service_configurer.configure_autochecks(
+            HostAddress("somehost"), [AutocheckEntryLike(CheckPluginName("df"), "/", {}, {})]
+        )
+    ) == [
+        ConfiguredService(
+            check_plugin_name=CheckPluginName("df"),
+            item="/",
+            description="df-/",  # we pass a simple callback, not the real one!
+            parameters=TimespecificParameters(
+                (
+                    TimespecificParameterSet.from_parameters({"configured": 42}),
+                    TimespecificParameterSet.from_parameters({}),
+                    TimespecificParameterSet.from_parameters({}),
+                )
+            ),
+            discovered_parameters={},
+            discovered_labels={},
+            labels={},
+            is_enforced=False,
+        ),
+    ]
+
+
+def _dummy_service(sid: ServiceID) -> ConfiguredService:
+    return ConfiguredService(*sid, "", TimespecificParameters(), {}, {}, {}, True)
+
+
+def test_aggregate_enforced_services_filters_unclustered() -> None:
+    sid1 = ServiceID(CheckPluginName("check1"), None)
+    sid2 = ServiceID(CheckPluginName("check2"), None)
+    assert tuple(
+        merge_enforced_services(
+            {
+                HostAddress("host1"): {sid1: ("ruleset_name1", _dummy_service(sid1))},
+                HostAddress("host2"): {sid2: ("ruleset_name2", _dummy_service(sid2))},
+            },
+            lambda host_name, servic_name, discovered_labels: host_name == HostAddress("host1"),
+            lambda service_name, discovered_labels: discovered_labels,
+        )
+    ) == (_dummy_service(sid1),)
+
+
+def _make_params(raw: Mapping[str, object]) -> TimespecificParameters:
+    return TimespecificParameters((TimespecificParameterSet.from_parameters(raw),))
+
+
+def test_aggregate_enforced_services_merge() -> None:
+    sid = ServiceID(CheckPluginName("check"), None)
+    assert tuple(
+        merge_enforced_services(
+            {
+                HostAddress("host1"): {
+                    sid: (
+                        "ruleset_name",
+                        ConfiguredService(
+                            *sid,
+                            "Description",
+                            _make_params({"common": 1, "1": 1}),
+                            {"common": 1, "1": 1},
+                            {"common": "1", "1": "1"},
+                            {"common": "1", "1": "1"},
+                            True,
+                        ),
+                    )
+                },
+                HostAddress("host2"): {
+                    sid: (
+                        "ruleset_name",
+                        ConfiguredService(
+                            *sid,
+                            "Description",
+                            _make_params({"common": 2, "2": 2}),
+                            {"common": 2, "2": 2},
+                            {"common": "2", "2": "2"},
+                            {"common": "2", "2": "2"},
+                            True,
+                        ),
+                    )
+                },
+            },
+            lambda host_name, servic_name, discovered_labels: True,
+            lambda service_name, discovered_labels: discovered_labels,
+        )
+    ) == (
+        ConfiguredService(
+            *sid,
+            "Description",
+            TimespecificParameters(
+                (
+                    TimespecificParameterSet.from_parameters({"common": 1, "1": 1}),
+                    TimespecificParameterSet.from_parameters({"common": 2, "2": 2}),
+                )
+            ),
+            {"common": 1, "1": 1, "2": 2},
+            {"common": "1", "1": "1", "2": "2"},
+            {"common": "1", "1": "1", "2": "2"},
+            is_enforced=True,
+        ),
+    )

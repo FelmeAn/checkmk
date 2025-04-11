@@ -24,7 +24,7 @@ def get_default_consider_job_status_choices() -> tuple[tuple[str, str], tuple[st
 
 
 def get_consider_job_status_valuespec(
-    choices: tuple[tuple[str, str], ...] = get_default_consider_job_status_choices()
+    choices: tuple[tuple[str, str], ...] = get_default_consider_job_status_choices(),
 ) -> DropdownChoice:
     return DropdownChoice(
         title=_("Job State"),
@@ -35,6 +35,11 @@ def get_consider_job_status_valuespec(
 
 status_disabled_jobs = MonitoringState(
     title=_("Status of service in case of disabled job"),
+    default_value=0,
+)
+
+status_disabled_schedule = MonitoringState(
+    title=_("Status of service in case of disabled schedule and enabled jobs"),
     default_value=0,
 )
 

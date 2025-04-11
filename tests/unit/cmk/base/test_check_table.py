@@ -3,37 +3,45 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
-
-
-from collections.abc import Mapping
+import dataclasses
+from collections.abc import Mapping, Sequence
 
 import pytest
-from pytest import MonkeyPatch
 
 # No stub file
-from tests.testlib.base import Scenario
+from tests.testlib.unit.base_configuration_scenario import Scenario
 
 from cmk.utils.hostaddress import HostName
-from cmk.utils.rulesets import RuleSetName
+from cmk.utils.servicename import ServiceName
 from cmk.utils.tags import TagGroupID, TagID
 
-from cmk.checkengine.checking import CheckPluginName, ConfiguredService, ServiceID
-from cmk.checkengine.discovery import AutocheckEntry
+from cmk.checkengine.checking import ABCCheckingConfig, ServiceConfigurer
 from cmk.checkengine.parameters import TimespecificParameters, TimespecificParameterSet
+from cmk.checkengine.plugin_backend import get_check_plugin
+from cmk.checkengine.plugins import (
+    AgentBasedPlugins,
+    AutocheckEntry,
+    CheckPluginName,
+    ConfiguredService,
+    ServiceID,
+)
 
-import cmk.base.api.agent_based.register as agent_based_register
-from cmk.base import config
-from cmk.base.api.agent_based.plugin_classes import CheckPlugin
-from cmk.base.config import FilterMode, HostCheckTable
+from cmk.base.config import FilterMode, HostCheckTable, service_description
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _use_fix_register(fix_register):
-    """These tests modify the plug-in registry. Make sure to load it first."""
+@dataclasses.dataclass(frozen=True)
+class CheckingConfigTest(ABCCheckingConfig):
+    rules: Mapping[HostName, Sequence[Mapping[str, object]]]
+
+    def __call__(
+        self, host_name: HostName, item: object, service_labels: object, ruleset_name: object
+    ) -> Sequence[Mapping[str, object]]:
+        return self.rules.get(host_name, [])
 
 
-def test_cluster_ignores_nodes_parameters(monkeypatch: MonkeyPatch) -> None:
+def test_cluster_ignores_nodes_parameters(
+    monkeypatch: pytest.MonkeyPatch, agent_based_plugins: AgentBasedPlugins
+) -> None:
     node = HostName("node")
     cluster = HostName("cluster")
 
@@ -58,27 +66,46 @@ def test_cluster_ignores_nodes_parameters(monkeypatch: MonkeyPatch) -> None:
     ts.set_autochecks(node, [AutocheckEntry(*service_id, {}, {})])
     config_cache = ts.apply(monkeypatch)
 
+    def service_description_callback(
+        hostname: HostName, check_plugin_name: CheckPluginName, item: str | None
+    ) -> ServiceName:
+        return service_description(
+            config_cache.ruleset_matcher,
+            config_cache.label_manager.labels_of_host,
+            hostname,
+            check_plugin_name,
+            service_name_template=(
+                None
+                if (p := get_check_plugin(check_plugin_name, agent_based_plugins.check_plugins))
+                is None
+                else p.service_name
+            ),
+            item=item,
+        )
+
     # a rule for the node:
-    monkeypatch.setattr(
-        config,
-        "_get_configured_parameters",
-        lambda host, *args, **kw: (
-            TimespecificParameters(
-                (TimespecificParameterSet.from_parameters({"levels_for_node": (1, 2)}),)
-            )
-            if host == node
-            else TimespecificParameters()
-        ),
+    service_configurer = ServiceConfigurer(
+        CheckingConfigTest({node: [{"levels_for_node": (1, 2)}]}),
+        plugins=agent_based_plugins.check_plugins,
+        get_service_description=service_description_callback,
+        get_effective_host=config_cache.effective_host,
+        get_service_labels=config_cache.label_manager.labels_of_service,
     )
 
-    clustered_service = config_cache.check_table(cluster)[service_id]
+    clustered_service = config_cache.check_table(
+        cluster,
+        agent_based_plugins.check_plugins,
+        service_configurer=service_configurer,
+    )[service_id]
     assert clustered_service.parameters.entries == (
         TimespecificParameterSet({}, ()),
         TimespecificParameterSet({"levels": (35, 40)}, ()),
     )
 
 
-def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
+def test_check_table_enforced_vs_discovered_precedence(
+    monkeypatch: pytest.MonkeyPatch, agent_based_plugins: AgentBasedPlugins
+) -> None:
     smart = CheckPluginName("smart_temp")
     node = HostName("node")
     cluster = HostName("cluster")
@@ -134,9 +161,11 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
         ],
     )
     config_cache = ts.apply(monkeypatch)
+    check_plugins = agent_based_plugins.check_plugins
+    service_configurer = config_cache.make_service_configurer(check_plugins)
 
-    node_services = config_cache.check_table(node)
-    cluster_services = config_cache.check_table(cluster)
+    node_services = config_cache.check_table(node, check_plugins, service_configurer)
+    cluster_services = config_cache.check_table(cluster, check_plugins, service_configurer)
 
     assert len(node_services) == 1
     assert len(cluster_services) == 2
@@ -172,12 +201,12 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                     parameters=TimespecificParameters(
                         (
                             TimespecificParameterSet({}, ()),
-                            TimespecificParameterSet({}, ()),
                             TimespecificParameterSet({"levels": (35, 40)}, ()),
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=True,
                 ),
             },
@@ -192,16 +221,23 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                     description="Unimplemented check bla_blub / ITEM",
                     parameters=TimespecificParameters(()),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=False,
                 ),
                 (CheckPluginName("blub_bla"), "ITEM"): ConfiguredService(
                     check_plugin_name=CheckPluginName("blub_bla"),
                     item="ITEM",
                     description="Unimplemented check blub_bla / ITEM",
-                    parameters=TimespecificParameters(),
+                    parameters=TimespecificParameters(
+                        (
+                            TimespecificParameterSet({}, ()),
+                            TimespecificParameterSet({}, ()),
+                        )
+                    ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=True,
                 ),
             },
@@ -217,12 +253,12 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                     parameters=TimespecificParameters(
                         (
                             TimespecificParameterSet({}, ()),
-                            TimespecificParameterSet({}, ()),
                             TimespecificParameterSet({"levels": (35, 40)}, ()),
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=True,
                 ),
             },
@@ -242,7 +278,8 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=False,
                 ),
                 (CheckPluginName("smart_temp"), "static-node1"): ConfiguredService(
@@ -252,12 +289,12 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                     parameters=TimespecificParameters(
                         (
                             TimespecificParameterSet({}, ()),
-                            TimespecificParameterSet({}, ()),
                             TimespecificParameterSet({"levels": (35, 40)}, ()),
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=True,
                 ),
             },
@@ -273,12 +310,12 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                     parameters=TimespecificParameters(
                         (
                             TimespecificParameterSet({}, ()),
-                            TimespecificParameterSet({}, ()),
                             TimespecificParameterSet({"levels": (35, 40)}, ()),
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=True,
                 ),
                 (CheckPluginName("smart_temp"), "auto-clustered"): ConfiguredService(
@@ -292,7 +329,8 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=False,
                 ),
             },
@@ -312,7 +350,8 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=False,
                 )
             },
@@ -332,7 +371,8 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=False,
                 )
             },
@@ -352,7 +392,8 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
                         )
                     ),
                     discovered_parameters={},
-                    service_labels={},
+                    labels={},
+                    discovered_labels={},
                     is_enforced=False,
                 )
             },
@@ -365,10 +406,11 @@ def test_check_table_enforced_vs_discovered_precedence(monkeypatch):
     ],
 )
 def test_check_table(
-    monkeypatch: MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
     hostname_str: str,
     filter_mode: FilterMode,
     expected_result: HostCheckTable,
+    agent_based_plugins: AgentBasedPlugins,
 ) -> None:
     hostname = HostName(hostname_str)
 
@@ -483,8 +525,17 @@ def test_check_table(
 
     config_cache = ts.apply(monkeypatch)
 
-    assert set(config_cache.check_table(hostname, filter_mode=filter_mode)) == set(expected_result)
-    for key, value in config_cache.check_table(hostname, filter_mode=filter_mode).items():
+    assert set(
+        config_cache.check_table(
+            hostname,
+            agent_based_plugins.check_plugins,
+            config_cache.make_service_configurer(agent_based_plugins.check_plugins),
+            filter_mode=filter_mode,
+        ),
+    ) == set(expected_result)
+    for key, value in config_cache.check_table(
+        hostname, {}, config_cache.make_service_configurer({}), filter_mode=filter_mode
+    ).items():
         assert key in expected_result
         assert expected_result[key] == value
 
@@ -497,7 +548,7 @@ def test_check_table(
     ],
 )
 def test_check_table_of_mgmt_boards(
-    monkeypatch: MonkeyPatch, hostname_str: str, expected_result: list[ServiceID]
+    monkeypatch: pytest.MonkeyPatch, hostname_str: str, expected_result: list[ServiceID]
 ) -> None:
     hostname = HostName(hostname_str)
 
@@ -539,10 +590,21 @@ def test_check_table_of_mgmt_boards(
 
     config_cache = ts.apply(monkeypatch)
 
-    assert list(config_cache.check_table(hostname).keys()) == expected_result
+    assert (
+        list(
+            config_cache.check_table(
+                hostname,
+                {},
+                config_cache.make_service_configurer({}),
+            ).keys()
+        )
+        == expected_result
+    )
 
 
-def test_check_table__static_checks_win(monkeypatch: MonkeyPatch) -> None:
+def test_check_table__static_checks_win(
+    monkeypatch: pytest.MonkeyPatch, agent_based_plugins: AgentBasedPlugins
+) -> None:
     hostname_str = "df_host"
     hostname = HostName(hostname_str)
     plugin_name = CheckPluginName("df")
@@ -563,102 +625,16 @@ def test_check_table__static_checks_win(monkeypatch: MonkeyPatch) -> None:
         },
     )
     ts.set_autochecks(hostname, [AutocheckEntry(plugin_name, item, {"source": "auto"}, {})])
+    config_cache = ts.apply(monkeypatch)
 
-    chk_table = ts.apply(monkeypatch).check_table(hostname)
+    chk_table = config_cache.check_table(
+        hostname,
+        agent_based_plugins.check_plugins,
+        config_cache.make_service_configurer(agent_based_plugins.check_plugins),
+    )
 
     # assert check table is populated as expected
     assert len(chk_table) == 1
     # assert static checks won
     effective_params = chk_table[ServiceID(plugin_name, item)].parameters.evaluate(lambda _: True)
     assert effective_params["source"] == "static"
-
-
-@pytest.mark.parametrize(
-    "check_group_parameters",
-    [
-        {},
-        {
-            "levels": (4, 5, 6, 7),
-        },
-    ],
-)
-def test_check_table__get_static_check_entries(
-    monkeypatch: MonkeyPatch, check_group_parameters: Mapping[str, object]
-) -> None:
-    hostname = HostName("hostname")
-
-    static_parameters_default = {"levels": (1, 2, 3, 4)}
-    static_checks: dict[str, list] = {
-        "ps": [
-            {
-                "id": "01",
-                "condition": {"service_description": [], "host_name": [hostname]},
-                "options": {},
-                "value": ("ps", "item", static_parameters_default),
-            }
-        ],
-    }
-
-    ts = Scenario()
-    ts.add_host(hostname)
-    ts.set_option("static_checks", static_checks)
-
-    ts.set_option(
-        "checkgroup_parameters",
-        {
-            "ps": [
-                {
-                    "id": "02",
-                    "condition": {"service_description": [], "host_name": [hostname]},
-                    "options": {},
-                    "value": check_group_parameters,
-                }
-            ],
-        },
-    )
-
-    config_cache = ts.apply(monkeypatch)
-
-    monkeypatch.setattr(
-        agent_based_register,
-        "get_check_plugin",
-        lambda cpn: CheckPlugin(
-            CheckPluginName("ps"),
-            [],
-            "Process item",
-            lambda: [],
-            None,
-            None,
-            "merged",
-            lambda: [],
-            {},
-            RuleSetName("ps"),
-            None,
-            None,
-        ),
-    )
-
-    static_check_parameters = [
-        service.parameters for _, service in config_cache.enforced_services_table(hostname).values()
-    ]
-
-    entries = config._get_checkgroup_parameters(
-        config_cache.ruleset_matcher,
-        hostname,
-        "ps",
-        "item",
-        "Process item",
-    )
-
-    assert len(entries) == 1
-    assert entries[0] == check_group_parameters
-
-    assert len(static_check_parameters) == 1
-    static_check_parameter = static_check_parameters[0]
-    assert static_check_parameter == TimespecificParameters(
-        (
-            TimespecificParameterSet(static_parameters_default, ()),
-            TimespecificParameterSet({}, ()),
-            TimespecificParameterSet({}, ()),
-        )
-    )

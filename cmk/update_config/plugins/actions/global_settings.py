@@ -5,6 +5,7 @@
 
 from collections.abc import Mapping, Sequence
 from logging import Logger
+from typing import override
 
 from cmk.utils.log import VERBOSE
 
@@ -21,7 +22,7 @@ from cmk.gui.watolib.global_settings import (
     save_global_settings,
     save_site_global_settings,
 )
-from cmk.gui.watolib.sites import site_globals_editable, SiteManagementFactory
+from cmk.gui.watolib.sites import site_globals_editable, site_management_registry
 
 from cmk.update_config.plugins.actions.tag_conditions import get_tag_config, transform_host_tags
 from cmk.update_config.registry import update_action_registry, UpdateAction
@@ -32,6 +33,7 @@ _REMOVED_OPTIONS: Sequence[str] = []
 
 
 class UpdateGlobalSettings(UpdateAction):
+    @override
     def __call__(self, logger: Logger) -> None:
         _update_installation_wide_global_settings(logger)
         _update_site_specific_global_settings(logger)
@@ -72,7 +74,7 @@ def _update_site_specific_global_settings(logger: Logger) -> None:
 
 def _update_remote_site_specific_global_settings(logger: Logger) -> None:
     """Update the site specific global settings in the central site configuration"""
-    site_mgmt = SiteManagementFactory().factory()
+    site_mgmt = site_management_registry["site_management"]
     configured_sites = site_mgmt.load_sites()
     for site_id, site_spec in configured_sites.items():
         if site_globals_editable(site_id, site_spec):
@@ -170,10 +172,10 @@ def _remove_options(
 
 def _transform_global_config_value(config_var: str, config_val: object) -> object:
     try:
-        config_variable_cls = config_variable_registry[config_var]
+        config_variable = config_variable_registry[config_var]
     except KeyError:
         return config_val
-    return config_variable_cls().valuespec().transform_value(config_val)
+    return config_variable.valuespec().transform_value(config_val)
 
 
 def _transform_global_config_values(global_config: GlobalSettings) -> GlobalSettings:

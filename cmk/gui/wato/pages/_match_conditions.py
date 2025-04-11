@@ -77,7 +77,7 @@ def _multi_folder_rule_match_condition() -> DictionaryEntry:
 
 
 class FullPathFolderChoice(DropdownChoice):
-    def __init__(self, title: str, help: str) -> None:  # pylint: disable=redefined-builtin
+    def __init__(self, title: str, help: str) -> None:
         super().__init__(title=title, help=help, choices=folder_tree().folder_choices_fulltitle)
 
 
@@ -238,7 +238,7 @@ class HostTagCondition(ValueSpec[Sequence[str]]):
                     html.open_tr()
                     html.td("%s: &nbsp;" % _u(tag_group.title or ""), class_="title")
 
-                    choices = tag_group.get_tag_choices()
+                    choices = tag_group.get_non_empty_tag_choices()
                     default_tag, deflt = self._current_tag_setting(choices, tag_specs)
                     self._tag_condition_dropdown(varprefix, "tag", deflt, tag_group.id)
                     if tag_group.is_checkbox_tag_group:

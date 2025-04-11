@@ -8,6 +8,9 @@ import itertools
 from collections import Counter
 from collections.abc import Callable, Container, Mapping, Sequence
 
+import cmk.ccc.debug
+from cmk.ccc.exceptions import MKGeneralException, OnError
+
 import cmk.utils.cleanup
 from cmk.utils import tty
 from cmk.utils.hostaddress import HostName
@@ -16,9 +19,9 @@ from cmk.utils.log import console, section
 from cmk.utils.rulesets.ruleset_matcher import RulesetMatcher
 from cmk.utils.sectionname import SectionMap, SectionName
 
-from cmk.checkengine.checking import CheckPluginName
 from cmk.checkengine.fetcher import FetcherFunction, HostKey
 from cmk.checkengine.parser import group_by_host, ParserFunction
+from cmk.checkengine.plugins import CheckPluginName, DiscoveryPlugin
 from cmk.checkengine.sectionparser import (
     make_providers,
     Provider,
@@ -27,11 +30,7 @@ from cmk.checkengine.sectionparser import (
 )
 from cmk.checkengine.sectionparserutils import check_parsing_errors
 
-import cmk.ccc.debug
-from cmk.ccc.exceptions import MKGeneralException, OnError
-
 from ._autochecks import AutochecksStore
-from ._discovery import DiscoveryPlugin
 from ._host_labels import discover_host_labels, HostLabelPlugin
 from ._services import analyse_services, discover_services, find_plugins
 from ._utils import QualifiedDiscovery

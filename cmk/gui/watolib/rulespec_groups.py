@@ -5,7 +5,6 @@
 
 """Defining built-in rule spec groups"""
 
-
 from cmk.gui.i18n import _
 
 from .rulespecs import (
@@ -81,7 +80,7 @@ class RulespecGroupHostsMonitoringRules(RulespecGroup):
 
     @property
     def help(self):
-        return _("Rules to configure the behaviour of monitored hosts.")
+        return _("Rules to configure the behavior of monitored hosts.")
 
 
 class RulespecGroupMonitoringConfigurationServiceChecks(RulespecSubGroup):
@@ -165,7 +164,7 @@ class RulespecGroupAgentSNMP(RulespecGroup):
 
     @property
     def help(self):
-        return _("Configure SNMP related settings using rulesets")
+        return _("Configure SNMP related settings using rule sets")
 
 
 class RulespecGroupMonitoringAgents(RulespecGroup):
@@ -193,7 +192,7 @@ class RulespecGroupMonitoringAgentsGenericOptions(RulespecSubGroup):
 
     @property
     def title(self) -> str:
-        return _("Generic Options")
+        return _("Generic agent options")
 
 
 class RulespecGroupEnforcedServicesNetworking(RulespecSubGroup):
@@ -277,7 +276,7 @@ class RulespecGroupEnforcedServicesStorage(RulespecSubGroup):
 
     @property
     def title(self) -> str:
-        return _("Storage, Filesystems and Files")
+        return _("Storage, file systems and files")
 
 
 class RulespecGroupEnforcedServicesVirtualization(RulespecSubGroup):

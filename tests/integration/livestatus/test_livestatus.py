@@ -11,9 +11,10 @@ from collections.abc import Iterator, Mapping
 
 import pytest
 
-from tests.testlib.site import Site
-
 from tests.integration.linux_test_host import create_linux_test_host
+
+from tests.testlib.common.utils import wait_until
+from tests.testlib.site import Site
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def default_cfg_fixture(request: pytest.FixtureRequest, site: Site) -> None:
     print("Applying default config")
     create_linux_test_host(request, site, "livestatus-test-host")
     create_linux_test_host(request, site, "livestatus-test-host.domain")
-    site.openapi.discover_services_and_wait_for_completion("livestatus-test-host")
+    site.openapi.service_discovery.run_discovery_and_wait_for_completion("livestatus-test-host")
     site.activate_changes_and_wait_for_core_reload()
 
 
@@ -72,7 +73,7 @@ def test_host_custom_variables(site: Site) -> None:
         "ADDRESS_4": "127.0.0.1",
         "ADDRESS_6": "",
     }
-    if site.version.is_managed_edition():
+    if site.edition.is_managed_edition():
         expected_variables["CUSTOMER"] = "provider"
     assert custom_variables == expected_variables
     assert tags == {
@@ -95,7 +96,7 @@ def test_host_table_host_equal_filter(site: Site) -> None:
         "nagios": "GET hosts\n"
         "Columns: host_name\n"
         "Filter: host_name = livestatus-test-host.domain\n",
-        "cmc": "GET hosts\n" "Columns: host_name\n" "Filter: host_name = livestatus-test-host\n",
+        "cmc": "GET hosts\nColumns: host_name\nFilter: host_name = livestatus-test-host\n",
     }
     results = {
         "nagios": [
@@ -145,13 +146,13 @@ def test_usage_counters(site: Site) -> None:
 
 @pytest.fixture(name="configure_service_tags")
 def configure_service_tags_fixture(site: Site) -> Iterator[None]:
-    site.openapi.create_host(
+    site.openapi.hosts.create(
         (hostname := "modes-test-host"),
         attributes={
             "ipaddress": "127.0.0.1",
         },
     )
-    rule_id = site.openapi.create_rule(
+    rule_id = site.openapi.rules.create(
         ruleset_name="service_tag_rules",
         value=[("criticality", "prod")],
         conditions={
@@ -169,8 +170,8 @@ def configure_service_tags_fixture(site: Site) -> Iterator[None]:
     try:
         yield
     finally:
-        site.openapi.delete_rule(rule_id)
-        site.openapi.delete_host(hostname)
+        site.openapi.rules.delete(rule_id)
+        site.openapi.hosts.delete(hostname)
         site.activate_changes_and_wait_for_core_reload()
 
 
@@ -233,15 +234,13 @@ class TestCrashReport:
         assert _json.loads(rows[0][0]) == crash_info
 
     def test_del_crash_report(self, site: Site, component: str, uuid: str) -> None:
-        before = site.live.query("GET crashreports")
-        assert [component, uuid] in before
-
+        assert [component, uuid] in site.live.query("GET crashreports")
         site.live.command("[%i] DEL_CRASH_REPORT;%s" % (_time.mktime(_time.gmtime()), uuid))
-        _time.sleep(0.1)  # Kindly let it complete.
-
-        after = site.live.query("GET crashreports")
-        assert after != before
-        assert [component, uuid] not in after
+        wait_until(
+            lambda: [component, uuid] not in site.live.query("GET crashreports"),
+            timeout=1,
+            interval=0.1,
+        )
 
     def test_other_crash_report(self, site: Site, component: str, uuid: str) -> None:
         before = site.live.query("GET crashreports")

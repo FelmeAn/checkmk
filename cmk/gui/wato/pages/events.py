@@ -7,6 +7,8 @@ import abc
 from collections.abc import Callable, Sequence
 from typing import Generic, Literal, TypeVar
 
+from cmk.ccc.version import Edition, edition
+
 from cmk.utils import paths
 from cmk.utils.notify_types import EventRule
 
@@ -30,8 +32,6 @@ from cmk.gui.watolib.hosts_and_folders import folder_tree
 from cmk.gui.watolib.mode import WatoMode
 from cmk.gui.watolib.timeperiods import TimeperiodSelection
 
-from cmk.ccc.version import edition, Edition
-
 from .._check_plugin_selection import CheckPluginSelection
 from .._group_selection import sorted_contact_group_choices, sorted_service_group_choices
 from ._match_conditions import common_host_rule_match_conditions, site_rule_match_condition
@@ -54,7 +54,7 @@ class ABCEventsMode(WatoMode, abc.ABC, Generic[_T_EventSpec]):
             add_choices = [
                 ("f", _("Start or end of flapping state")),
                 ("s", _("Start or end of a scheduled downtime")),
-                ("x", _("Acknowledgement of problem")),
+                ("x", _("Acknowledgment of problem")),
                 ("as", _("Alert handler execution, successful")),
                 ("af", _("Alert handler execution, failed")),
             ]

@@ -59,7 +59,14 @@ def _vs_item_appearance(title, help_txt):
             ("alias", _("Use alias")),
         ],
         default_value="index",
-        help=help_txt,
+        help=help_txt
+        + _(
+            "<br> <br>  "
+            "<b>Important note</b>: When changing this option, the services "
+            "need to be removed and rediscovered to apply the changes. "
+            "Otherwise there is a risk of mismatch between the discovered "
+            "and checked services."
+        ),
     )
 
 
@@ -578,7 +585,7 @@ PERC_DISCARD_LEVELS = (10.0, 20.0)
 PERC_PKG_LEVELS = (10.0, 20.0)
 
 
-def _vs_alternative_levels(  # pylint: disable=redefined-builtin
+def _vs_alternative_levels(
     title: str,
     help: str,
     percent_levels: tuple[float, float] = (0.0, 0.0),
@@ -605,7 +612,7 @@ def _vs_alternative_levels(  # pylint: disable=redefined-builtin
                 optional_keys=False,
             ),
             Dictionary(
-                title="Provide seperate levels for in and out",
+                title="Provide separate levels for in and out",
                 elements=[
                     (
                         "in",
@@ -735,6 +742,23 @@ def _vs_state_mappings() -> CascadingDropdown:
     )
 
 
+def _migrate_parameter_valuespec_if(value: dict[str, object]) -> dict[str, object]:
+    if "speed" in value:
+        value["discovered_speed"] = value.pop("speed")
+    if "state" in value:
+        value["discovered_oper_status"] = value.pop("state")
+    if "discovered_state" in value:
+        value["discovered_oper_status"] = value.pop("discovered_state")
+    return value
+
+
+def _parameter_valuespec_if_migrate() -> Migrate:
+    return Migrate(
+        valuespec=_parameter_valuespec_if(),
+        migrate=_migrate_parameter_valuespec_if,
+    )
+
+
 def _parameter_valuespec_if() -> Dictionary:
     return Dictionary(
         ignored_keys=[
@@ -742,6 +766,7 @@ def _parameter_valuespec_if() -> Dictionary:
             "discovered_oper_status",
             "discovered_admin_status",
             "discovered_speed",
+            "item_appearance",
         ],  # Created by discovery
         elements=[
             (
@@ -938,7 +963,7 @@ def _parameter_valuespec_if() -> Dictionary:
                     title=_("Activate total bandwidth metric (sum of in and out)"),
                     help=_(
                         "By activating this item, the sum of incoming and outgoing traffic will "
-                        "be monitored via a seperate metric. Setting levels on the used total bandwidth "
+                        "be monitored via a separate metric. Setting levels on the used total bandwidth "
                         "is optional. If you set levels you might also consider using averaging."
                     ),
                     elements=[
@@ -974,16 +999,18 @@ def _parameter_valuespec_if() -> Dictionary:
             ),
             (
                 "nucasts",
-                Tuple(
-                    title=_("Non-unicast packet rates"),
-                    help=_(
-                        "Setting levels on non-unicast packet rates is optional. This may help "
-                        "to detect broadcast storms and other unwanted traffic."
+                Migrate(
+                    valuespec=_vs_alternative_levels(
+                        title=_("Non-Unicast packet rates"),
+                        help=_(
+                            "Setting levels on non-unicast packet rates is optional. This may help "
+                            "to detect broadcast storms and other unwanted traffic."
+                        ),
+                        percent_levels=PERC_PKG_LEVELS,
+                        percent_detail=_(" (in relation to all successful packets)"),
+                        abs_detail=_(" (in packets per second)"),
                     ),
-                    elements=[
-                        Integer(title=_("Warning at"), unit=_("pkts / sec")),
-                        Integer(title=_("Critical at"), unit=_("pkts / sec")),
-                    ],
+                    migrate=_transform_discards,
                 ),
             ),
             (
@@ -1113,7 +1140,7 @@ rulespec_registry.register(
         group=RulespecGroupCheckParametersNetworking,
         item_spec=_item_spec_if,
         match_type="dict",
-        parameter_valuespec=_parameter_valuespec_if,
+        parameter_valuespec=_parameter_valuespec_if_migrate,
         title=lambda: _("Network interfaces and switch ports"),
     )
 )

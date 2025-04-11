@@ -12,11 +12,15 @@ import hashlib
 import json
 import sys
 import time
-from collections.abc import Container, Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Container, Iterator, Mapping, MutableMapping, Sequence
 from contextlib import contextmanager
-from functools import partial
 from pathlib import Path
 from typing import assert_never, Final, Literal, NamedTuple
+
+from pydantic import BaseModel
+
+from cmk.ccc.store import ObjectStore, TextSerializer
+from cmk.ccc.version import __version__, Version
 
 from cmk.utils.hostaddress import HostName
 from cmk.utils.labels import HostLabel, HostLabelValueDict
@@ -29,36 +33,40 @@ from cmk.automations.results import (
     SetAutochecksInput,
 )
 
-from cmk.checkengine.checking import CheckPluginName
-from cmk.checkengine.discovery import AutocheckEntry, CheckPreviewEntry
+from cmk.checkengine.discovery import CheckPreviewEntry
+from cmk.checkengine.plugins import AutocheckEntry, CheckPluginName
 
 import cmk.gui.watolib.changes as _changes
 from cmk.gui.background_job import (
     BackgroundJob,
     BackgroundProcessInterface,
     InitialStatusArgs,
-    job_registry,
     JobStatusSpec,
     JobStatusStates,
+    JobTarget,
 )
 from cmk.gui.config import active_config
 from cmk.gui.i18n import _
 from cmk.gui.logged_in import user
 from cmk.gui.site_config import get_site_config, site_is_local
 from cmk.gui.watolib.activate_changes import sync_changes_before_remote_automation
-from cmk.gui.watolib.automations import do_remote_automation
+from cmk.gui.watolib.automations import AnnotatedHostName, do_remote_automation
 from cmk.gui.watolib.check_mk_automations import (
     local_discovery,
     local_discovery_preview,
     set_autochecks_v2,
     update_host_labels,
 )
+from cmk.gui.watolib.config_domain_name import (
+    config_domain_registry,
+    generate_hosts_to_update_settings,
+)
+from cmk.gui.watolib.config_domain_name import (
+    CORE as CORE_DOMAIN,
+)
 from cmk.gui.watolib.hosts_and_folders import Host
 from cmk.gui.watolib.rulesets import EnabledDisabledServicesEditor
 from cmk.gui.watolib.utils import may_edit_ruleset
-
-from cmk.ccc.store import ObjectStore, TextSerializer
-from cmk.ccc.version import __version__, Version
 
 
 # Would rather use an Enum for this, but this information is exported to javascript
@@ -108,7 +116,7 @@ class DiscoveryAction(enum.StrEnum):
 
     >>> import json
     >>> [json.dumps(a) for a in DiscoveryAction]
-    ['""', '"stop"', '"fix_all"', '"refresh"', '"tabula_rasa"', '"single_update"', '"bulk_update"', '"update_host_labels"', '"update_services"', '"update_service_labels"', '"single_update_service_labels"']
+    ['""', '"stop"', '"fix_all"', '"refresh"', '"tabula_rasa"', '"single_update"', '"bulk_update"', '"update_host_labels"', '"update_services"', '"update_service_labels"', '"update_discovery_parameters"', '"single_update_service_properties"']
     """
 
     NONE = ""  # corresponds to Full Scan in WATO
@@ -121,11 +129,13 @@ class DiscoveryAction(enum.StrEnum):
     UPDATE_HOST_LABELS = "update_host_labels"
     UPDATE_SERVICES = "update_services"
     UPDATE_SERVICE_LABELS = "update_service_labels"
-    SINGLE_UPDATE_SERVICE_LABELS = "single_update_service_labels"
+    UPDATE_DISCOVERY_PARAMETERS = "update_discovery_parameters"
+    SINGLE_UPDATE_SERVICE_PROPERTIES = "single_update_service_properties"
 
 
 class UpdateType(enum.Enum):
     "States that an individual service can be changed to by clicking a button"
+
     UNDECIDED = "new"
     MONITORED = "unchanged"
     IGNORED = "ignored"
@@ -184,7 +194,7 @@ class DiscoveryResult(NamedTuple):
         )
 
     @classmethod
-    def deserialize(cls, raw: str) -> "DiscoveryResult":
+    def deserialize(cls, raw: str) -> DiscoveryResult:
         (
             job_status,
             check_table_created,
@@ -231,6 +241,17 @@ class DiscoveryOptions(NamedTuple):
     ignore_errors: bool
 
 
+@dataclasses.dataclass(frozen=True)
+class DiscoveryTransition:
+    """Describes the computed transition of the discovery state"""
+
+    need_sync: bool
+    remove_disabled_rule: set[str]
+    add_disabled_rule: set[str]
+    old_autochecks: SetAutochecksInput
+    new_autochecks: SetAutochecksInput
+
+
 class Discovery:
     def __init__(
         self,
@@ -240,14 +261,36 @@ class Discovery:
         update_target: str | None,
         update_source: str | None = None,
         selected_services: Container[tuple[str, Item]],
+        user_need_permission: Callable[[str], None],
     ) -> None:
         self._host = host
         self._action = action
         self._update_source = update_source
         self._update_target = update_target
         self._selected_services = selected_services
+        self.user_need_permission: Final = user_need_permission
 
     def do_discovery(self, discovery_result: DiscoveryResult, target_host_name: HostName) -> None:
+        if (
+            transition := self.compute_discovery_transition(discovery_result, target_host_name)
+        ) is None:
+            return
+
+        if transition.need_sync:
+            self._save_host_service_enable_disable_rules(
+                transition.remove_disabled_rule, transition.add_disabled_rule
+            )
+
+        self._save_services(
+            target_host_name,
+            transition.old_autochecks,
+            transition.new_autochecks,
+            transition.need_sync,
+        )
+
+    def compute_discovery_transition(
+        self, discovery_result: DiscoveryResult, target_host_name: HostName
+    ) -> DiscoveryTransition | None:
         changed_target_services: MutableMapping[ServiceName, AutocheckEntry] = {}
         changed_nodes_services: MutableMapping[
             HostName, MutableMapping[ServiceName, AutocheckEntry]
@@ -305,42 +348,46 @@ class Discovery:
                 unchanged_nodes_services[autochecks_host_name] = unchanged_services
                 changed_nodes_services[autochecks_host_name] = changed_services
 
-        if apply_changes:
-            need_sync = False
-            if remove_disabled_rule or add_disabled_rule:
-                add_disabled_rule = add_disabled_rule - remove_disabled_rule - saved_services
-                EnabledDisabledServicesEditor(self._host).save_host_service_enable_disable_rules(
-                    remove_disabled_rule, add_disabled_rule
-                )
-                need_sync = True
-            self._save_services(
-                target_host_name,
-                SetAutochecksInput(
-                    target_host_name, unchanged_target_services, unchanged_nodes_services
-                ),
-                SetAutochecksInput(
-                    target_host_name, changed_target_services, changed_nodes_services
-                ),
-                need_sync,
-            )
+        if not apply_changes:
+            return None
 
-    @staticmethod
-    def _verify_permissions(table_target: str, entry: CheckPreviewEntry) -> None:
+        return DiscoveryTransition(
+            need_sync=bool(
+                remove_disabled_rule or add_disabled_rule
+            ),  # Watch out! Can't be derived form the next two!
+            remove_disabled_rule=remove_disabled_rule,
+            add_disabled_rule=add_disabled_rule - remove_disabled_rule - saved_services,
+            old_autochecks=SetAutochecksInput(
+                target_host_name, unchanged_target_services, unchanged_nodes_services
+            ),
+            new_autochecks=SetAutochecksInput(
+                target_host_name, changed_target_services, changed_nodes_services
+            ),
+        )
+
+    def _save_host_service_enable_disable_rules(
+        self, remove_disabled_rule: set[str], add_disabled_rule: set[str]
+    ) -> None:
+        EnabledDisabledServicesEditor(self._host).save_host_service_enable_disable_rules(
+            remove_disabled_rule, add_disabled_rule
+        )
+
+    def _verify_permissions(self, table_target: str, entry: CheckPreviewEntry) -> None:
         if entry.check_source != table_target:
             match table_target:
                 case DiscoveryState.UNDECIDED:
-                    user.need_permission("wato.service_discovery_to_undecided")
+                    self.user_need_permission("wato.service_discovery_to_undecided")
                 case (
                     DiscoveryState.MONITORED
                     | DiscoveryState.CHANGED
                     | DiscoveryState.CLUSTERED_NEW
                     | DiscoveryState.CLUSTERED_OLD
                 ):
-                    user.need_permission("wato.service_discovery_to_monitored")
+                    self.user_need_permission("wato.service_discovery_to_monitored")
                 case DiscoveryState.IGNORED:
-                    user.need_permission("wato.service_discovery_to_ignored")
+                    self.user_need_permission("wato.service_discovery_to_ignored")
                 case DiscoveryState.REMOVED:
-                    user.need_permission("wato.service_discovery_to_removed")
+                    self.user_need_permission("wato.service_discovery_to_removed")
 
     def _get_autochecks_values(
         self, table_target: str, entry: CheckPreviewEntry
@@ -363,15 +410,24 @@ class Discovery:
                     return unchanged_autochecks_value, AutocheckEntry(
                         CheckPluginName(entry.check_plugin_name),
                         entry.item,
-                        entry.old_discovered_parameters,
+                        (
+                            entry.new_discovered_parameters
+                            if self._action
+                            in (
+                                DiscoveryAction.FIX_ALL,
+                                DiscoveryAction.UPDATE_DISCOVERY_PARAMETERS,
+                                DiscoveryAction.SINGLE_UPDATE_SERVICE_PROPERTIES,
+                            )
+                            else entry.old_discovered_parameters
+                        ),
                         (
                             entry.new_labels
                             if self._action
-                            in [
+                            in (
                                 DiscoveryAction.FIX_ALL,
                                 DiscoveryAction.UPDATE_SERVICE_LABELS,
-                                DiscoveryAction.SINGLE_UPDATE_SERVICE_LABELS,
-                            ]
+                                DiscoveryAction.SINGLE_UPDATE_SERVICE_PROPERTIES,
+                            )
                             else entry.old_labels
                         ),
                     )
@@ -388,20 +444,31 @@ class Discovery:
             affected_host_name,
             len(autochecks_table.target_services),
         )
+        self._add_service_change(message, need_sync, old_autochecks, autochecks_table)
+        set_autochecks_v2(
+            self._host.site_id(),
+            autochecks_table,
+        )
+
+    def _add_service_change(
+        self,
+        message: str,
+        need_sync: bool,
+        old_autochecks: SetAutochecksInput,
+        autochecks_table: SetAutochecksInput,
+    ) -> None:
         _changes.add_service_change(
             action_name="set-autochecks",
             text=message,
             object_ref=self._host.object_ref(),
+            domains=[config_domain_registry[CORE_DOMAIN]],
+            domain_settings={CORE_DOMAIN: generate_hosts_to_update_settings([self._host.name()])},
             site_id=self._host.site_id(),
             need_sync=need_sync,
             diff_text=make_diff_text(
                 _make_host_audit_log_object(old_autochecks),
                 _make_host_audit_log_object(autochecks_table),
             ),
-        )
-        set_autochecks_v2(
-            self._host.site_id(),
-            autochecks_table,
         )
 
     def _get_table_target(self, entry: CheckPreviewEntry) -> str:
@@ -417,13 +484,25 @@ class Discovery:
             return DiscoveryState.MONITORED
 
         if self._action == DiscoveryAction.UPDATE_SERVICE_LABELS and self._update_target:
+            if entry.check_source == DiscoveryState.IGNORED:
+                return DiscoveryState.IGNORED
+            return self._update_target
+
+        if self._action == DiscoveryAction.UPDATE_DISCOVERY_PARAMETERS and self._update_target:
+            if entry.check_source == DiscoveryState.IGNORED:
+                return DiscoveryState.IGNORED
             return self._update_target
 
         if not self._update_target:
             return entry.check_source
 
         if self._action == DiscoveryAction.BULK_UPDATE:
-            if entry.check_source != self._update_source:
+            # actions that apply to monitored services are also applied to changed services,
+            # since these are a subset of monitored services, but are classified differently.
+            if entry.check_source != self._update_source and not (
+                entry.check_source == DiscoveryState.CHANGED
+                and self._update_source == DiscoveryState.MONITORED
+            ):
                 return entry.check_source
 
             if (entry.check_plugin_name, entry.item) in self._selected_services:
@@ -431,7 +510,7 @@ class Discovery:
 
         if self._action in [
             DiscoveryAction.SINGLE_UPDATE,
-            DiscoveryAction.SINGLE_UPDATE_SERVICE_LABELS,
+            DiscoveryAction.SINGLE_UPDATE_SERVICE_PROPERTIES,
         ]:
             if (entry.check_plugin_name, entry.item) in self._selected_services:
                 return self._update_target
@@ -445,25 +524,36 @@ class Discovery:
         def _entry_key(entry: CheckPreviewEntry) -> tuple[str, Item]:
             return entry.check_plugin_name, entry.item
 
-        effective_check_tables: Mapping[HostName, list[CheckPreviewEntry]] = {
-            **{target_host_name: list(discovery_result.check_table)},
-            **{node_host_name: [] for node_host_name in discovery_result.nodes_check_table.keys()},
-        }
-        cluster_entries_lookup = {
-            _entry_key(cluster_entry) for cluster_entry in discovery_result.check_table
+        cluster_entries_nodes = {
+            _entry_key(cluster_entry): cluster_entry.found_on_nodes
+            for cluster_entry in discovery_result.check_table
         }
 
-        # Only relevant for clusters. Find the affected check tables on the nodes and run
-        # all the discovery actions on the nodes as well.
-        for host_name, check_table in discovery_result.nodes_check_table.items():
-            table_entries = {_entry_key(e): e for e in check_table}
-            effective_check_tables[host_name].extend(
-                [
-                    table_entries[key]
-                    for key in cluster_entries_lookup.intersection(set(table_entries.keys()))
-                ]
-            )
-        return effective_check_tables
+        def _should_be_kept(node_name: HostName, entry: CheckPreviewEntry) -> bool:
+            try:
+                found_on_nodes = cluster_entries_nodes[_entry_key(entry)]
+            except KeyError:
+                return False  # not clustered at all -> not of interest here.
+            if found_on_nodes:
+                # The service is found on some nodes.
+                # We need to drop it from all other nodes, so that the newly
+                # discovered parameters can not be overwritten by other, older
+                # discovered parameters (and labels, respectively).
+                return node_name in found_on_nodes
+            # The service is not found on any node.
+            # Me must not remove it, otherwise the user will experience "vanished"
+            # services being silently dropped.
+            return True
+
+        return {
+            target_host_name: discovery_result.check_table,
+            # Only relevant for clusters. Find the affected check tables on the nodes and run
+            # all the discovery actions on the nodes as well.
+            **{
+                node_name: [entry for entry in check_table if _should_be_kept(node_name, entry)]
+                for node_name, check_table in discovery_result.nodes_check_table.items()
+            },
+        }
 
 
 @contextmanager
@@ -494,6 +584,7 @@ def perform_fix_all(
             update_target=None,
             update_source=None,
             selected_services=(),  # does not matter in case of "FIX_ALL"
+            user_need_permission=user.need_permission,
         ).do_discovery(discovery_result, host.name())
         discovery_result = get_check_table(host, DiscoveryAction.FIX_ALL, raise_errors=raise_errors)
     return discovery_result
@@ -533,6 +624,7 @@ def perform_service_discovery(
             update_target=update_target,
             update_source=update_source,
             selected_services=selected_services,
+            user_need_permission=user.need_permission,
         ).do_discovery(discovery_result, host.name())
         discovery_result = get_check_table(host, action, raise_errors=raise_errors)
     return discovery_result
@@ -563,7 +655,7 @@ def has_discovery_action_specific_permissions(
             )
         case DiscoveryAction.REFRESH:
             return user.may("wato.services")
-        case DiscoveryAction.SINGLE_UPDATE | DiscoveryAction.SINGLE_UPDATE_SERVICE_LABELS:
+        case DiscoveryAction.SINGLE_UPDATE | DiscoveryAction.SINGLE_UPDATE_SERVICE_PROPERTIES:
             if update_target is None:
                 # This should never happen.
                 # The typing possibilities are currently so limited that I don't see a better solution.
@@ -578,6 +670,8 @@ def has_discovery_action_specific_permissions(
         case DiscoveryAction.UPDATE_HOST_LABELS:
             return user.may("wato.services")
         case DiscoveryAction.UPDATE_SERVICE_LABELS:
+            return user.may("wato.services")
+        case DiscoveryAction.UPDATE_DISCOVERY_PARAMETERS:
             return user.may("wato.services")
         case DiscoveryAction.UPDATE_SERVICES:
             return user.may("wato.services")
@@ -626,6 +720,8 @@ def _perform_update_host_labels(labels_by_nodes: Mapping[HostName, Sequence[Host
             "update-host-labels",
             message,
             host.object_ref(),
+            [config_domain_registry[CORE_DOMAIN]],
+            {CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
             host.site_id(),
         )
         update_host_labels(
@@ -918,6 +1014,8 @@ def get_check_table(host: Host, action: DiscoveryAction, *, raise_errors: bool) 
             "refresh-autochecks",
             _("Refreshed check configuration of host '%s'") % host.name(),
             host.object_ref(),
+            [config_domain_registry[CORE_DOMAIN]],
+            {CORE_DOMAIN: generate_hosts_to_update_settings([host.name()])},
             host.site_id(),
         )
 
@@ -944,16 +1042,19 @@ def get_check_table(host: Host, action: DiscoveryAction, *, raise_errors: bool) 
     )
 
 
-# multiprocessing needs picklable objects and neither lambdas nor
-# local functions are picklable.
-def _discovery_job_target(
+class ServiceDiscoveryJobArgs(BaseModel, frozen=True):
+    host_name: AnnotatedHostName
+    action: DiscoveryAction
+    raise_errors: bool
+
+
+def discovery_job_entry_point(
     job_interface: BackgroundProcessInterface,
-    job: ServiceDiscoveryBackgroundJob,
-    action: DiscoveryAction,
-    raise_errors: bool,
+    args: ServiceDiscoveryJobArgs,
 ) -> None:
+    job = ServiceDiscoveryBackgroundJob(args.host_name)
     with job_interface.gui_context():
-        job.discover(action, raise_errors=raise_errors)
+        job.discover(args.action, raise_errors=args.raise_errors)
 
 
 def execute_discovery_job(
@@ -970,16 +1071,26 @@ def execute_discovery_job(
         DiscoveryAction.REFRESH,
         DiscoveryAction.TABULA_RASA,
     ]:
-        job.start(
-            partial(_discovery_job_target, job=job, action=action, raise_errors=raise_errors),
-            InitialStatusArgs(
-                title=_("Service discovery"),
-                stoppable=True,
-                host_name=str(host_name),
-                estimated_duration=job.get_status().duration,
-                user=str(user.id) if user.id else None,
-            ),
-        )
+        if (
+            result := job.start(
+                JobTarget(
+                    callable=discovery_job_entry_point,
+                    args=ServiceDiscoveryJobArgs(
+                        host_name=host_name,
+                        action=action,
+                        raise_errors=raise_errors,
+                    ),
+                ),
+                InitialStatusArgs(
+                    title=_("Service discovery"),
+                    stoppable=True,
+                    host_name=str(host_name),
+                    estimated_duration=job.get_status().duration,
+                    user=str(user.id) if user.id else None,
+                ),
+            )
+        ).is_error():
+            raise result.error
 
     if job.is_active() and action == DiscoveryAction.STOP:
         job.stop()
@@ -1039,7 +1150,7 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
 
     def discover(self, action: DiscoveryAction, *, raise_errors: bool) -> None:
         """Target function of the background job"""
-        print("Starting job...")
+        sys.stdout.write("Starting job...\n")
         self._pre_discovery_preview = self._get_discovery_preview()
 
         if action == DiscoveryAction.REFRESH:
@@ -1052,7 +1163,7 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
 
         else:
             raise NotImplementedError()
-        print("Completed.")
+        sys.stdout.write("Completed.\n")
 
     def _perform_service_scan(self, *, raise_errors: bool) -> None:
         """The service-discovery-preview automation refreshes the Checkmk internal cache and makes
@@ -1112,7 +1223,7 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
     def _get_discovery_preview(self) -> tuple[int, ServiceDiscoveryPreviewResult]:
         return (
             int(time.time()),
-            local_discovery_preview(self.host_name, prevent_fetching=True, raise_errors=False),
+            local_discovery_preview(self.host_name, prevent_fetching=False, raise_errors=False),
         )
 
     @staticmethod
@@ -1136,6 +1247,3 @@ class ServiceDiscoveryBackgroundJob(BackgroundJob):
             update={"state": JobStatusStates.FINISHED, "loginfo": new_loginfo},
             deep=True,  # not sure, better play it safe.
         )
-
-
-job_registry.register(ServiceDiscoveryBackgroundJob)

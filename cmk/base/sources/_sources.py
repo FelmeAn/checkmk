@@ -38,6 +38,7 @@ from cmk.fetchers.filecache import (
 
 from cmk.checkengine.fetcher import FetcherType, SourceInfo, SourceType
 from cmk.checkengine.parser import SectionNameCollection
+from cmk.checkengine.plugins import AgentBasedPlugins
 
 from ._api import Source
 
@@ -70,6 +71,7 @@ class SNMPFetcherConfig:
 class FetcherFactory(Protocol):
     def make_snmp_fetcher(
         self,
+        plugins: AgentBasedPlugins,
         host_name: HostName,
         ipaddress: HostAddress,
         *,
@@ -121,6 +123,7 @@ class SNMPSource(Source[SNMPRawData]):
     def __init__(
         self,
         factory: FetcherFactory,
+        plugins: AgentBasedPlugins,
         host_name: HostName,
         ipaddress: HostAddress,
         *,
@@ -130,6 +133,7 @@ class SNMPSource(Source[SNMPRawData]):
     ) -> None:
         super().__init__()
         self.factory: Final = factory
+        self.plugins: Final = plugins
         self.host_name: Final = host_name
         self.ipaddress: Final = ipaddress
         self._fetcher_config: Final = fetcher_config
@@ -147,6 +151,7 @@ class SNMPSource(Source[SNMPRawData]):
 
     def fetcher(self) -> SNMPFetcher:
         return self.factory.make_snmp_fetcher(
+            self.plugins,
             self.host_name,
             self.ipaddress,
             source_type=self.source_type,
@@ -174,6 +179,7 @@ class MgmtSNMPSource(Source[SNMPRawData]):
     def __init__(
         self,
         factory: FetcherFactory,
+        plugins: AgentBasedPlugins,
         host_name: HostName,
         ipaddress: HostAddress,
         *,
@@ -183,6 +189,7 @@ class MgmtSNMPSource(Source[SNMPRawData]):
     ) -> None:
         super().__init__()
         self.factory: Final = factory
+        self.plugins: Final = plugins
         self.host_name: Final = host_name
         self.ipaddress: Final = ipaddress
         self._max_age: Final = max_age
@@ -200,6 +207,7 @@ class MgmtSNMPSource(Source[SNMPRawData]):
 
     def fetcher(self) -> SNMPFetcher:
         return self.factory.make_snmp_fetcher(
+            self.plugins,
             self.host_name,
             self.ipaddress,
             source_type=self.source_type,
@@ -360,9 +368,7 @@ class PushAgentSource(Source[AgentRawData]):
             use_only_cache=True,
             file_cache_mode=(
                 # Careful: at most read-only!
-                FileCacheMode.DISABLED
-                if file_cache_options.disabled
-                else FileCacheMode.READ
+                FileCacheMode.DISABLED if file_cache_options.disabled else FileCacheMode.READ
             ),
         )
 

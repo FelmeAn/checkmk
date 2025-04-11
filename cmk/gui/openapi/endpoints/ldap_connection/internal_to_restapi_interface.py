@@ -7,19 +7,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast, get_args, Literal, TypedDict
 
+from cmk.gui.exceptions import MKUserError
+from cmk.gui.i18n import _
+from cmk.gui.type_defs import DisableNotificationsAttribute
 from cmk.gui.userdb import (
     ACTIVE_DIR,
     ActivePlugins,
+    ConfigurableUserConnectionSpec,
     CUSTOM_USER_ATTRIBUTE,
     DIR_SERVER_389,
     DISABLE_NOTIFICATIONS,
-    DisableNotificationsAttribute,
     Discover,
     Fixed,
     FORCE_AUTH_USER,
     get_ldap_connections,
     GroupsToAttributes,
     GroupsToContactGroups,
+    GroupsToRoles,
     GroupsToSync,
     ICONS_PER_ITEM,
     LDAPConnectionConfigDiscover,
@@ -35,6 +39,7 @@ from cmk.gui.userdb import (
     UI_THEME,
     UserConnectionConfigFile,
 )
+from cmk.gui.userdb.ldap_connector import LDAPUserConnector
 
 
 class APICheckboxDisabled(TypedDict):
@@ -656,6 +661,7 @@ class APIGroupsWithConnectionID(TypedDict):
 
 
 class APIGroupsToRoles(APICheckboxEnabled, total=False):
+    handle_nested: bool
     admin: list[APIGroupsWithConnectionID]
     agent_registration: list[APIGroupsWithConnectionID]
     guest: list[APIGroupsWithConnectionID]
@@ -974,21 +980,26 @@ def groups_to_attributes_api_to_int(
 
 def groups_to_roles_req_to_int(
     data: APIGroupsToRoles | APICheckboxDisabled | None,
-) -> None | dict[str, list[tuple[str, str | None]]]:
+) -> None | GroupsToRoles:
     if data is None:
         return None
 
     if data["state"] == "disabled":
         return None
 
-    groups_to_roles: dict[str, list[tuple[str, str | None]]] = {}
+    groups_to_roles: GroupsToRoles = {}
+
     for role, groups in {k: v for k, v in data.items() if isinstance(v, list)}.items():
-        groups_to_roles[role] = []
-        for group in groups:
-            if group["search_in"] == "this_connection":
-                groups_to_roles[role].append((group["group_dn"], None))
-            else:
-                groups_to_roles[role].append((group["group_dn"], group["search_in"]))
+        groups_to_roles[role] = [
+            (
+                group["group_dn"],
+                None if group["search_in"] == "this_connection" else group["search_in"],
+            )
+            for group in groups
+        ]
+
+    if "handle_nested" in data and data["handle_nested"]:
+        groups_to_roles["nested"] = True
 
     return groups_to_roles
 
@@ -1095,6 +1106,10 @@ class SyncPlugins:
         if internal_groups_to_roles := self.active_plugins.get("groups_to_roles"):
             groups_to_roles: APIGroupsToRoles = {"state": "enabled"}
             for k, v in internal_groups_to_roles.items():
+                if v is True:
+                    groups_to_roles["handle_nested"] = True
+                    continue
+
                 groups_to_roles[k] = [  # type: ignore[literal-required]
                     {
                         "group_dn": groupdn,
@@ -1184,7 +1199,7 @@ class LDAPConnectionInterface:
 
     @classmethod
     def from_api_request(cls, config: APIConnection) -> LDAPConnectionInterface:
-        c = cls(
+        return cls(
             general_properties=GeneralProperties.from_api_request(config["general_properties"]),
             connection_config=ConnectionConfig.from_api_request(config["ldap_connection"]),
             users=Users.from_api_request(config["users"]),
@@ -1192,16 +1207,6 @@ class LDAPConnectionInterface:
             sync_plugins=SyncPlugins.from_api_request(config["sync_plugins"]),
             other=Other.from_api_request(config["other"]),
         )
-
-        # The UI raises an error when the group dn is not set and you try to configure
-        # the groups to roles plugin.
-        for _user_role, grouplist in c.sync_plugins.active_plugins.get(
-            "groups_to_roles", {}
-        ).items():
-            for dn, _search_in in grouplist:
-                if dn != c.groups.group_dn:
-                    raise ValueError("The configured DN does not match the group base DN.")
-        return c
 
     def api_response(self) -> dict:
         r = {
@@ -1262,10 +1267,19 @@ def request_ldap_connections() -> dict[str, LDAPConnectionInterface]:
     }
 
 
+def update_suffixes(cfg: list[ConfigurableUserConnectionSpec]) -> None:
+    LDAPUserConnector.connection_suffixes = {}
+    for connection in cfg:
+        if connection["type"] == "ldap":
+            LDAPUserConnector(connection)
+
+
 def request_to_delete_ldap_connection(ldap_id: str) -> None:
     config_file = UserConnectionConfigFile()
     all_connections = UserConnectionConfigFile().load_for_modification()
-    config_file.save([c for c in all_connections if c["id"] != ldap_id])
+    updated_connections = [c for c in all_connections if c["id"] != ldap_id]
+    update_suffixes(updated_connections)
+    config_file.save(updated_connections)
 
 
 def request_to_create_ldap_connection(ldap_data: APIConnection) -> LDAPConnectionInterface:
@@ -1273,6 +1287,7 @@ def request_to_create_ldap_connection(ldap_data: APIConnection) -> LDAPConnectio
     config_file = UserConnectionConfigFile()
     all_connections = config_file.load_for_modification()
     all_connections.append(connection.to_mk_format())
+    update_suffixes(all_connections)
     config_file.save(all_connections)
     return connection
 
@@ -1280,10 +1295,23 @@ def request_to_create_ldap_connection(ldap_data: APIConnection) -> LDAPConnectio
 def request_to_edit_ldap_connection(
     ldap_id: str, ldap_data: APIConnection
 ) -> LDAPConnectionInterface:
+    if ldap_data["ldap_connection"]["connection_suffix"]["state"] == "enabled":
+        for ldap_connection in [
+            cnx for ldapid, cnx in get_ldap_connections().items() if ldapid != ldap_id
+        ]:
+            if (suffix := ldap_connection.get("suffix")) is not None:
+                if suffix == ldap_data["ldap_connection"]["connection_suffix"]["suffix"]:
+                    raise MKUserError(
+                        None,
+                        _("The suffix '%s' is already in use by another LDAP connection.")
+                        % ldap_connection["suffix"],
+                    )
+
     config_file = UserConnectionConfigFile()
     all_connections = config_file.load_for_modification()
     connection = LDAPConnectionInterface.from_api_request(ldap_data)
     modified_connections = [c for c in all_connections if c["id"] != ldap_id]
     modified_connections.append(connection.to_mk_format())
+    update_suffixes(modified_connections)
     config_file.save(modified_connections)
     return connection

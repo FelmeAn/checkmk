@@ -7,20 +7,18 @@ import itertools
 import sys
 from collections.abc import Container, Iterable, Iterator, Mapping, Sequence
 
+import cmk.ccc.debug
+from cmk.ccc.exceptions import MKTimeout, OnError
+
 from cmk.utils import tty
 from cmk.utils.hostaddress import HostName
 from cmk.utils.log import console
 
-from cmk.checkengine.checking import CheckPluginName, ServiceID
 from cmk.checkengine.fetcher import HostKey, SourceType
+from cmk.checkengine.plugins import AutocheckEntry, CheckPluginName, DiscoveryPlugin, ServiceID
 from cmk.checkengine.sectionparser import ParsedSectionName, Provider
 from cmk.checkengine.sectionparserutils import get_section_kwargs
 
-import cmk.ccc.debug
-from cmk.ccc.exceptions import MKTimeout, OnError
-
-from ._autochecks import AutocheckEntry
-from ._discovery import DiscoveryPlugin
 from ._utils import QualifiedDiscovery
 
 __all__ = ["analyse_services", "discover_services", "find_plugins"]
@@ -120,7 +118,7 @@ def discover_services(
     providers: Mapping[HostKey, Provider],
     plugins: Mapping[CheckPluginName, DiscoveryPlugin],
     on_error: OnError,
-) -> Iterable[AutocheckEntry]:
+) -> Sequence[AutocheckEntry]:
     service_table: dict[ServiceID, AutocheckEntry] = {}
     for check_plugin_name in plugin_names:
         try:
@@ -152,7 +150,8 @@ def discover_services(
                 console.error(f"Discovery of '{check_plugin_name}' failed: {e}", file=sys.stderr)
 
     # TODO: Building a dict to discard its keys isn't efficient.
-    return service_table.values()
+    # (this currently deduplicates items. Could be done on a per-plugin basis.)
+    return list(service_table.values())
 
 
 def _discover_plugins_services(

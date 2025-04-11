@@ -3,19 +3,18 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
-
 
 from pathlib import Path
 from stat import S_IMODE
 
 import pytest
 
-from omdlib.certs import CertificateAuthority  # pylint: disable=wrong-import-order
+from omdlib.certs import CertificateAuthority
 
 from cmk.utils.certs import root_cert_path, RootCA
-from cmk.utils.crypto.certificate import Certificate, CertificatePEM
-from cmk.utils.crypto.keys import PlaintextPrivateKeyPEM, PrivateKey
+
+from cmk.crypto.certificate import Certificate, CertificatePEM
+from cmk.crypto.keys import PlaintextPrivateKeyPEM, PrivateKey
 
 CA_NAME = "test-ca"
 
@@ -24,7 +23,7 @@ CA_NAME = "test-ca"
 def fixture_ca(tmp_path: Path) -> CertificateAuthority:
     ca_path = tmp_path / "ca"
     return CertificateAuthority(
-        root_ca=RootCA.load_or_create(root_cert_path(ca_path), CA_NAME),
+        root_ca=RootCA.load_or_create(root_cert_path(ca_path), CA_NAME, key_size=1024),
         ca_path=ca_path,
     )
 

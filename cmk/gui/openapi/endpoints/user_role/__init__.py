@@ -62,22 +62,26 @@ RW_PERMISSIONS = permissions.AllPerm(
 )
 
 
-def serialize_user_role(user_role: UserRole) -> DomainObject:
-    extns = {
+def _serialize_user_role_extensions(user_role: UserRole) -> dict[str, Any]:
+    extensions = {
         "alias": user_role.alias,
         "builtin": user_role.builtin,
         "permissions": get_role_permissions().get(user_role.name),
+        "enforce_two_factor_authentication": user_role.two_factor,
     }
     if not user_role.builtin:
-        extns["basedon"] = user_role.basedon
+        extensions["basedon"] = user_role.basedon
+    return extensions
 
+
+def serialize_user_role(user_role: UserRole) -> DomainObject:
     return constructors.domain_object(
         domain_type="user_role",
         identifier=user_role.name,
         title=user_role.alias,
-        extensions=extns,
+        extensions=_serialize_user_role_extensions(user_role),
         editable=True,
-        deletable=not (user_role.builtin),
+        deletable=not user_role.builtin,
     )
 
 
@@ -152,6 +156,7 @@ def create_userrole(params: Mapping[str, Any]) -> Response:
         role_id=RoleID(body["role_id"]),
         new_role_id=body.get("new_role_id"),
         new_alias=body.get("new_alias"),
+        two_factor=body.get("enforce_two_factor_authentication"),
     )
     return serve_json(serialize_user_role(cloned_user_role))
 
@@ -235,6 +240,9 @@ def edit_userrole(params: Mapping[str, Any]) -> Response:
                 detail="You can't edit the basedon value of a built-in role.",
             )
         userrole_to_edit.basedon = basedon
+
+    if (two_factor := body.get("enforce_two_factor_authentication")) is not None:
+        userrole_to_edit.two_factor = two_factor
 
     if new_permissions := body.get("new_permissions"):
         userroles.update_permissions(userrole_to_edit, new_permissions.items())

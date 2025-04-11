@@ -2,8 +2,8 @@
 # Copyright (C) 2019 Checkmk GmbH - License: GNU General Public License v2
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
-from collections.abc import Sequence
-from typing import Any, TypeVar
+from collections.abc import Mapping, Sequence
+from typing import Any, override, TypeVar
 
 from cmk.utils.tags import AuxTag, TagGroup, TagGroupID, TagID
 
@@ -21,6 +21,7 @@ from cmk.gui.valuespec import (
     Transform,
     Tuple,
 )
+from cmk.gui.valuespec.definitions import ValueSpec
 
 _TagChoiceID = TypeVar("_TagChoiceID", TagGroupID, TagID)
 
@@ -32,18 +33,6 @@ def _is_or_is_not(label: str | None = None) -> DropdownChoice:
             ("is_not", _("is not")),
         ],
         label=label,
-    )
-
-
-def _tag_choice(tag_group: TagGroup) -> Tuple:
-    return Tuple(
-        title=_u(tag_group.choice_title),
-        elements=[
-            _is_or_is_not(),
-            DropdownChoice(choices=tag_group.get_tag_choices()),
-        ],
-        show_titles=False,
-        orientation="horizontal",
     )
 
 
@@ -94,7 +83,7 @@ def _validate_tag_list(
 
 
 def _get_tag_group_choice(tag_group: TagGroup) -> tuple[TagGroupID, Tuple | CascadingDropdown]:
-    tag_choices = tag_group.get_tag_choices()
+    tag_choices = tag_group.get_non_empty_tag_choices()
 
     if len(tag_choices) == 1:
         return _single_tag_choice(
@@ -149,9 +138,9 @@ def _get_tag_group_choices() -> Sequence[tuple[TagID | TagGroupID, Tuple | Casca
 
 
 @request_memoize()
-def _get_cached_tag_group_choices() -> (
-    Sequence[tuple[TagID | TagGroupID, Tuple | CascadingDropdown]]
-):
+def _get_cached_tag_group_choices() -> Sequence[
+    tuple[TagID | TagGroupID, Tuple | CascadingDropdown]
+]:
     # In case one has configured a lot of tag groups / id recomputing this for
     # every DictHostTagCondition instance takes a lot of time
     return _get_tag_group_choices()
@@ -223,5 +212,6 @@ class DictHostTagCondition(Transform):
 
 
 class PageAjaxDictHostTagConditionGetChoice(ABCPageListOfMultipleGetChoice):
-    def _get_choices(self, api_request):
+    @override
+    def _get_choices(self, api_request: Mapping[str, str]) -> Sequence[tuple[str, ValueSpec]]:
         return _get_tag_group_choices()

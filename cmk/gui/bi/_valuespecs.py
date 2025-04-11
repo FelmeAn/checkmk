@@ -7,6 +7,8 @@ import abc
 import copy
 from typing import Any
 
+from cmk.ccc import plugin_registry
+
 from cmk.utils.statename import short_service_state_name
 
 from cmk.gui import userdb
@@ -42,7 +44,6 @@ from cmk.bi.aggregation_functions import (
 from cmk.bi.lib import ABCBIAction, ABCBIAggregationFunction, ABCBISearch, ActionKind, SearchKind
 from cmk.bi.packs import BIAggregationPack
 from cmk.bi.search import BIEmptySearch, BIFixedArgumentsSearch, BIHostSearch, BIServiceSearch
-from cmk.ccc import plugin_registry
 
 from ._packs import get_cached_bi_packs
 
@@ -721,7 +722,7 @@ class BIConfigStateOfServiceAction(actions.BIStateOfServiceAction, ABCBIConfigAc
                 title=_("Service Regex:"),
                 help=_(
                     "A regular expression matching the <b>beginning</b> of a service "
-                    "description. You can use a trailing <tt>$</tt> in order to define an "
+                    "name. You can use a trailing <tt>$</tt> in order to define an "
                     "exact match. For each matching service on the specified hosts one child "
                     "node will be created. "
                 ),

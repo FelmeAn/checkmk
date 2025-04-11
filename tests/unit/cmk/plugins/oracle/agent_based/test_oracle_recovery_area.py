@@ -4,12 +4,11 @@
 # conditions defined in the file COPYING, which is part of this source code package.
 
 
+from collections.abc import Sequence
+
 import pytest
 
-from tests.unit.cmk.plugins.oracle.agent_based.utils_inventory import sort_inventory_result
-from tests.unit.conftest import FixRegister
-
-from cmk.checkengine.checking import CheckPluginName
+from cmk.checkengine.plugins import AgentBasedPlugins, CheckPluginName
 
 from cmk.agent_based.v2 import (
     CheckResult,
@@ -21,7 +20,9 @@ from cmk.agent_based.v2 import (
     StringTable,
     TableRow,
 )
-from cmk.plugins.oracle.agent_based.oracle_recovery_area import inventory_oracle_recovery_area
+from cmk.plugins.oracle.agent_based.oracle_recovery_area import (
+    inventory_oracle_recovery_area,
+)
 
 _AGENT_OUTPUT = [
     ["AIMDWHD1", "300", "51235", "49000", "300"],
@@ -40,9 +41,11 @@ _AGENT_OUTPUT = [
     ],
 )
 def test_discover_oracle_recovery_area(
-    fix_register: FixRegister, string_table: StringTable, expected_result: CheckResult
+    agent_based_plugins: AgentBasedPlugins,
+    string_table: StringTable,
+    expected_result: Sequence[Service],
 ) -> None:
-    check_plugin = fix_register.check_plugins[CheckPluginName("oracle_recovery_area")]
+    check_plugin = agent_based_plugins.check_plugins[CheckPluginName("oracle_recovery_area")]
     assert sorted(check_plugin.discovery_function(string_table)) == expected_result
 
 
@@ -64,9 +67,12 @@ def test_discover_oracle_recovery_area(
     ],
 )
 def test_check_oracle_recovery_area(
-    fix_register: FixRegister, string_table: StringTable, item: str, expected_result: CheckResult
+    agent_based_plugins: AgentBasedPlugins,
+    string_table: StringTable,
+    item: str,
+    expected_result: CheckResult,
 ) -> None:
-    check_plugin = fix_register.check_plugins[CheckPluginName("oracle_recovery_area")]
+    check_plugin = agent_based_plugins.check_plugins[CheckPluginName("oracle_recovery_area")]
     assert (
         list(
             check_plugin.check_function(
@@ -105,6 +111,4 @@ def test_check_oracle_recovery_area(
 def test_inventory_oracle_recovery_area(
     string_table: StringTable, expected_result: InventoryResult
 ) -> None:
-    assert sort_inventory_result(
-        inventory_oracle_recovery_area(string_table)
-    ) == sort_inventory_result(expected_result)
+    assert list(inventory_oracle_recovery_area(string_table)) == expected_result

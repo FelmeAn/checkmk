@@ -5,6 +5,7 @@
 """Performing the actual checks."""
 
 import itertools
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Container, Iterable, Mapping, Sequence
 from typing import NamedTuple
 
@@ -17,7 +18,7 @@ from cmk.utils.regex import regex
 from cmk.utils.resulttype import Result
 from cmk.utils.sectionname import SectionMap, SectionName
 from cmk.utils.servicename import ServiceName
-from cmk.utils.structured_data import TreeStore
+from cmk.utils.structured_data import make_meta, TreeStore
 from cmk.utils.timeperiod import check_timeperiod, TimeperiodName
 
 from cmk.snmplib import SNMPRawData
@@ -28,10 +29,16 @@ from cmk.checkengine.fetcher import HostKey, SourceInfo
 from cmk.checkengine.inventory import (
     HWSWInventoryParameters,
     inventorize_status_data_of_real_host,
+)
+from cmk.checkengine.parser import group_by_host, ParserFunction
+from cmk.checkengine.plugins import (
+    AggregatedResult,
+    CheckerPlugin,
+    CheckPluginName,
+    ConfiguredService,
     InventoryPlugin,
     InventoryPluginName,
 )
-from cmk.checkengine.parser import group_by_host, ParserFunction
 from cmk.checkengine.sectionparser import (
     make_providers,
     Provider,
@@ -42,9 +49,25 @@ from cmk.checkengine.sectionparserutils import check_parsing_errors
 from cmk.checkengine.submitters import Submittee, Submitter
 from cmk.checkengine.summarize import SummarizerFunction
 
-from ._plugin import AggregatedResult, CheckPlugin, CheckPluginName, ConfiguredService
+__all__ = [
+    "execute_checkmk_checks",
+    "check_host_services",
+    "check_plugins_missing_data",
+    "ABCCheckingConfig",
+]
 
-__all__ = ["execute_checkmk_checks", "check_host_services", "check_plugins_missing_data"]
+type _Labels = Mapping[str, str]
+
+
+class ABCCheckingConfig(ABC):
+    @abstractmethod
+    def __call__(
+        self,
+        host_name: HostName,
+        item: str | None,
+        service_labels: Mapping[str, str],
+        ruleset_name: str,
+    ) -> Sequence[Mapping[str, object]]: ...
 
 
 def execute_checkmk_checks(
@@ -59,12 +82,12 @@ def execute_checkmk_checks(
     parser: ParserFunction,
     summarizer: SummarizerFunction,
     section_plugins: SectionMap[SectionPlugin],
-    check_plugins: Mapping[CheckPluginName, CheckPlugin],
+    check_plugins: Mapping[CheckPluginName, CheckerPlugin],
     inventory_plugins: Mapping[InventoryPluginName, InventoryPlugin],
     inventory_parameters: Callable[[HostName, InventoryPlugin], Mapping[str, object]],
     params: HWSWInventoryParameters,
     services: Sequence[ConfiguredService],
-    get_check_period: Callable[[ServiceName], TimeperiodName | None],
+    get_check_period: Callable[[ServiceName, _Labels], TimeperiodName | None],
     run_plugin_names: Container[CheckPluginName],
     submitter: Submitter,
     exit_spec: ExitSpec,
@@ -140,7 +163,11 @@ def _do_inventory_actions_during_checking_for(
     )
 
     if status_data_tree:
-        tree_store.save(host_name=host_name, tree=status_data_tree)
+        tree_store.save(
+            host_name=host_name,
+            tree=status_data_tree,
+            meta=make_meta(do_archive=False),
+        )
 
 
 class PluginState(NamedTuple):
@@ -166,8 +193,8 @@ def check_plugins_missing_data(
 
     if not any(r.data_received for r in service_results):
         yield ActiveCheckResult(
-            missing_status,
-            "Missing monitoring data for all plugins",
+            state=missing_status,
+            summary="Missing monitoring data for all plugins",
         )
         return
 
@@ -175,16 +202,16 @@ def check_plugins_missing_data(
         r.service.check_plugin_name for r in service_results if not r.data_received
     }
 
-    yield ActiveCheckResult(0, "Missing monitoring data for plugins")
+    yield ActiveCheckResult(state=0, summary="Missing monitoring data for plugins")
 
     for check_plugin_name in sorted(plugins_missing_data):
         for pattern, status in specific_plugins_missing_data_spec:
             reg = regex(pattern)
             if reg.match(str(check_plugin_name)):
-                yield ActiveCheckResult(status, str(check_plugin_name))
+                yield ActiveCheckResult(state=status, summary=str(check_plugin_name))
                 break
         else:  # no break
-            yield ActiveCheckResult(missing_status, str(check_plugin_name))
+            yield ActiveCheckResult(state=missing_status, summary=str(check_plugin_name))
 
 
 def check_host_services(
@@ -192,16 +219,18 @@ def check_host_services(
     *,
     providers: Mapping[HostKey, Provider],
     services: Sequence[ConfiguredService],
-    check_plugins: Mapping[CheckPluginName, CheckPlugin],
+    check_plugins: Mapping[CheckPluginName, CheckerPlugin],
     run_plugin_names: Container[CheckPluginName],
-    get_check_period: Callable[[ServiceName], TimeperiodName | None],
+    get_check_period: Callable[[ServiceName, _Labels], TimeperiodName | None],
 ) -> Iterable[AggregatedResult]:
     """Compute service state results for all given services on node or cluster"""
     for service in (
         s
         for s in services
         if s.check_plugin_name in run_plugin_names
-        and not service_outside_check_period(s.description, get_check_period(s.description))
+        and not service_outside_check_period(
+            s.description, get_check_period(s.description, s.labels)
+        )
     ):
         if service.check_plugin_name not in check_plugins:
             yield AggregatedResult(

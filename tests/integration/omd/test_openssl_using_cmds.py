@@ -3,12 +3,27 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+import os
+
 import pytest
 
 from tests.testlib.site import Site
 
 
-@pytest.mark.parametrize("cmd", ["ssh -V", "curl -V", "pdftoppm -v"])
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "ssh -V",
+        "curl -V",
+        "pdftoppm -v",
+        pytest.param(
+            "zypper",
+            marks=pytest.mark.skipif(
+                not os.environ.get("DISTRO", "").startswith("sles"), reason="Only relevant for SLES"
+            ),
+        ),
+    ],
+)
 def test_command(site: Site, cmd: str) -> None:
     """
     Ensures that commands using OpenSSL, such as ssh and curl, are working.
@@ -23,8 +38,7 @@ def test_command(site: Site, cmd: str) -> None:
     We execute this test in the CI containers of all supported distros to ensure that commands using
     OpenSSL which are available there can be executed.
     """
-    with site.execute(cmd.split()) as p:
-        assert p.wait() == 0
+    site.run(cmd.split())
 
 
 def test_scp(site: Site) -> None:
@@ -40,12 +54,8 @@ def test_scp(site: Site) -> None:
     We execute this test in the CI containers of all supported distros to ensure that commands using
     OpenSSL which are available there can be executed.
     """
-    with site.execute(["touch", "test_scp_source"]) as p:
-        assert p.wait() == 0
-    with site.execute(["scp", "test_scp_source", "test_scp_target"]) as p:
-        exit_code = p.wait()
-        print(p.stdout)
-        print(p.stderr)
-        assert exit_code == 0
-    with site.execute(["rm", "test_scp_target"]) as p:
-        assert p.wait() == 0
+    site.run(["touch", "test_scp_source"])
+    p = site.run(["scp", "test_scp_source", "test_scp_target"])
+    print(p.stdout)
+    print(p.stderr)
+    site.run(["rm", "test_scp_target"])

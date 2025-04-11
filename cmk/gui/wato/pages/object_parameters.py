@@ -3,10 +3,11 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
+
 """Mode for displaying and modifying the rule based host and service
 parameters. This is a host/service overview page over all things that can be
 modified via rules."""
+
 import functools
 from collections.abc import Callable, Collection, Container, Iterator
 
@@ -55,6 +56,9 @@ from ._status_links import make_service_status_link
 
 def register(mode_registry: ModeRegistry) -> None:
     mode_registry.register(ModeObjectParameters)
+
+
+NOTDISPLAYABLE = ["logwatch_ec_single"]
 
 
 class ModeObjectParameters(WatoMode):
@@ -182,9 +186,6 @@ class ModeObjectParameters(WatoMode):
             self._host.site_id(),
             self._hostname,
         )
-        if not host_info:
-            return
-
         forms.header(_("Host information"), isopen=True, narrow=True, css="rulesettings")
         self._show_labels(host_info.labels, "host", host_info.label_sources)
 
@@ -231,6 +232,12 @@ class ModeObjectParameters(WatoMode):
     ) -> None:
         # First case: discovered checks. They come from var/check_mk/autochecks/HOST.
         checkgroup = serviceinfo["checkgroup"]
+
+        if (checktype := serviceinfo["checktype"]) in NOTDISPLAYABLE:
+            reason = _("Check parameters for check type '%s' can not be displayed") % checktype
+        else:
+            reason = _("This check is not configurable via Setup")
+
         not_configurable_render = functools.partial(
             self._render_rule_reason,
             _("Parameters"),
@@ -238,7 +245,7 @@ class ModeObjectParameters(WatoMode):
             "",
             "",
             True,
-            _("This check is not configurable via WATO"),
+            reason,
         )
         if not checkgroup or checkgroup == "None":
             not_configurable_render()
@@ -322,7 +329,7 @@ class ModeObjectParameters(WatoMode):
         if rulespec is None or (
             rulespec_allow_list is not None and not rulespec_allow_list.is_visible(rulespec.name)
         ):
-            html.write_text_permissive(_("This check is not configurable via WATO"))
+            html.write_text_permissive(_("This check is not configurable via Setup"))
             return
 
         rulespec = rulespec_registry[RuleGroup.StaticChecks(checkgroup)]
@@ -458,7 +465,7 @@ class ModeObjectParameters(WatoMode):
         html.open_tr()
 
         html.open_td(class_="reason")
-        html.i(_("Explicit, ruleset, discovered"))
+        html.i(_("Explicit, rule set, discovered"))
         html.close_td()
         html.open_td(class_=["settingvalue", "used"])
         html.write_html(
@@ -497,7 +504,7 @@ class ModeObjectParameters(WatoMode):
         html.close_tr()
         html.close_table()
 
-    def _output_analysed_ruleset(  # pylint: disable=too-many-branches
+    def _output_analysed_ruleset(
         self,
         all_rulesets: AllRulesets,
         rulespec: Rulespec,
@@ -571,7 +578,7 @@ class ModeObjectParameters(WatoMode):
         if isinstance(known_settings, dict) and "tp_computed_params" in known_settings:
             computed_at = known_settings["tp_computed_params"]["computed_at"]
             html.write_text_permissive(
-                _("Timespecific parameters computed at %s")
+                _("Time specific parameters computed at %s")
                 % cmk.utils.render.date_and_time(computed_at)
             )
             html.br()
@@ -596,7 +603,7 @@ class ModeObjectParameters(WatoMode):
                     raise
                 html.write_text_permissive(_("Invalid parameter %r: %s") % (known_settings, e))
 
-        elif valuespec and not rules:  # show the default value
+        elif not rules:  # show the default value
             if rulespec.factory_default is not Rulespec.NO_FACTORY_DEFAULT:
                 # If there is a factory default then show that one
                 setting = rulespec.factory_default
@@ -611,22 +618,17 @@ class ModeObjectParameters(WatoMode):
                 html.write_text_permissive(valuespec.value_to_html(valuespec.default_value()))
 
         # We have a setting
-        elif valuespec:
-            if ruleset.match_type() == "all":
-                if not isinstance(setting, list):
-                    raise ValueError(f"Expected list, got {setting}")
-                html.write_html(
-                    HTML.without_escaping(", ").join(
-                        [valuespec.value_to_html(value) for value in setting]
-                    )
+        elif ruleset.match_type() == "all":
+            if not isinstance(setting, list):
+                raise ValueError(f"Expected list, got {setting}")
+            html.write_html(
+                HTML.without_escaping(", ").join(
+                    [valuespec.value_to_html(value) for value in setting]
                 )
-            else:
-                html.write_text_permissive(valuespec.value_to_html(setting))
-
-        # Binary rule, no valuespec, outcome is True or False
+            )
         else:
-            icon_name = "rule_{}{}".format("yes" if setting else "no", "_off" if not rules else "")
-            html.icon(icon_name, title=_("yes") if setting else _("no"))
+            html.write_text_permissive(valuespec.value_to_html(setting))
+
         html.close_td()
         html.close_tr()
         html.close_table()

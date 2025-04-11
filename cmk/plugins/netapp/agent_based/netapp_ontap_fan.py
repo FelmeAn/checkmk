@@ -6,8 +6,8 @@
 from collections.abc import Mapping
 
 from cmk.agent_based.v2 import AgentSection, CheckPlugin, CheckResult, StringTable
-from cmk.plugins.lib import netapp_api
 from cmk.plugins.netapp import models
+from cmk.plugins.netapp.agent_based import lib as netapp_api
 
 Section = Mapping[str, models.ShelfFanModel]
 
@@ -51,7 +51,7 @@ def parse_netapp_ontap_fan(string_table: StringTable) -> Section:
     return {
         fan.item_name(): fan
         for line in string_table
-        if (fan := models.ShelfFanModel.model_validate_json(line[0]))
+        for fan in [models.ShelfFanModel.model_validate_json(line[0])]
     }
 
 

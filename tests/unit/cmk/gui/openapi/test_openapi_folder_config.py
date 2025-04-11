@@ -13,9 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.testlib.rest_api_client import ClientRegistry
+from tests.testlib.unit.rest_api_client import ClientRegistry
 
-from tests.unit.cmk.gui.conftest import WebTestAppForCMK
+from tests.unit.cmk.web_test_app import WebTestAppForCMK
+
+from cmk.ccc import version
 
 from cmk.utils import paths
 from cmk.utils.user import UserId
@@ -23,8 +25,6 @@ from cmk.utils.user import UserId
 from cmk.gui.fields import FOLDER_PATTERN, FolderField
 from cmk.gui.fields.utils import BaseSchema
 from cmk.gui.watolib.predefined_conditions import PredefinedConditionStore
-
-from cmk.ccc import version
 
 
 @pytest.mark.parametrize(
@@ -268,13 +268,8 @@ def test_openapi_folder_config_collections(aut_user_auth_wsgi_app: WebTestAppFor
 
 
 @pytest.mark.usefixtures("with_host")
-def test_openapi_folder_hosts_sub_resource(aut_user_auth_wsgi_app: WebTestAppForCMK) -> None:
-    aut_user_auth_wsgi_app.call_method(
-        "get",
-        "/NO_SITE/check_mk/api/1.0/objects/folder_config/~/collections/hosts",
-        status=200,
-        headers={"Accept": "application/json"},
-    )
+def test_openapi_hosts_in_folder(clients: ClientRegistry) -> None:
+    clients.Folder.get_hosts("~")
 
 
 def test_openapi_hosts_in_folder_collection(aut_user_auth_wsgi_app: WebTestAppForCMK) -> None:
@@ -313,15 +308,17 @@ def test_openapi_hosts_in_folder_collection(aut_user_auth_wsgi_app: WebTestAppFo
     resp = aut_user_auth_wsgi_app.call_method(
         "get",
         "/NO_SITE/check_mk/api/1.0/domain-types/folder_config/collections/all",
-        params={"show_hosts": True},
+        query_string={"show_hosts": True},
         headers={"Accept": "application/json"},
+        content_type="application/json",
+        status=200,
     )
     hosts_ = resp.json["value"][0]["members"]["hosts"]["value"]
     assert len(hosts_) == 2
     resp = aut_user_auth_wsgi_app.call_method(
         "get",
         "/NO_SITE/check_mk/api/1.0/domain-types/folder_config/collections/all",
-        params={"show_hosts": False},
+        query_string={"show_hosts": False},
         headers={"Accept": "application/json"},
     )
     assert "hosts" not in resp.json["value"][0]["members"]
@@ -465,7 +462,7 @@ def test_openapi_show_folder_with_network_scan_result(
     resp = aut_user_auth_wsgi_app.call_method(
         "get",
         "/NO_SITE/check_mk/api/1.0/domain-types/folder_config/collections/all",
-        params={"show_hosts": False},
+        query_string={"show_hosts": False},
         headers={"Accept": "application/json"},
     )
     assert resp.json["value"][0]["extensions"] == {
@@ -522,7 +519,7 @@ def test_openapi_show_hosts_on_folder(aut_user_auth_wsgi_app: WebTestAppForCMK) 
     resp = aut_user_auth_wsgi_app.call_method(
         "get",
         "/NO_SITE/check_mk/api/1.0/objects/folder_config/~new_folder",
-        params={"show_hosts": True},
+        query_string={"show_hosts": True},
         status=200,
         headers={"Accept": "application/json"},
     )
@@ -532,7 +529,7 @@ def test_openapi_show_hosts_on_folder(aut_user_auth_wsgi_app: WebTestAppForCMK) 
     resp = aut_user_auth_wsgi_app.call_method(
         "get",
         "/NO_SITE/check_mk/api/1.0/objects/folder_config/~new_folder",
-        params={"show_hosts": False},
+        query_string={"show_hosts": False},
         status=200,
         headers={"Accept": "application/json"},
     )
@@ -568,6 +565,28 @@ def test_openapi_update_with_invalid_attribute_folder(
         headers={"Accept": "application/json", "If-Match": resp.headers["ETag"]},
         content_type="application/json",
     )
+
+
+def test_openapi_update_with_invalid_title(
+    clients: ClientRegistry,
+) -> None:
+    clients.Folder.create(
+        folder_name="new_folder",
+        title="foo",
+        parent="~",
+    )
+
+    clients.Folder.edit(
+        folder_name="~new_folder",
+        title="",
+        expect_ok=False,
+    ).assert_status_code(400)
+
+    clients.Folder.edit(
+        folder_name="~new_folder",
+        update_attributes={"labels": "do_not_update:title"},
+        expect_ok=False,
+    ).assert_status_code(400)
 
 
 @pytest.mark.usefixtures("suppress_remote_automation_calls")
@@ -657,7 +676,7 @@ def test_openapi_folder_root(aut_user_auth_wsgi_app: WebTestAppForCMK) -> None:
     _ = aut_user_auth_wsgi_app.call_method(
         "get",
         "/NO_SITE/check_mk/api/1.0/objects/folder_config/~",
-        params={"show_hosts": False},
+        query_string={"show_hosts": False},
         headers={"Accept": "application/json"},
         status=200,
     )
@@ -711,7 +730,7 @@ def test_openapi_folder_config_collections_recursive_list(
     response = aut_user_auth_wsgi_app.call_method(
         "get",
         "/NO_SITE/check_mk/api/1.0/domain-types/folder_config/collections/all",
-        params={"parent": "~I", "recursive": "True"},
+        query_string={"parent": "~I", "recursive": "True"},
         status=200,
         headers={"Accept": "application/json"},
     )
@@ -724,38 +743,22 @@ def test_openapi_folder_config_collections_recursive_list(
     version.edition(paths.omd_root) is version.Edition.CRE, reason="Tested Attribute is not in RAW"
 )
 def test_bake_agent_package_attribute_regression(
-    base: str, aut_user_auth_wsgi_app: WebTestAppForCMK
+    clients: ClientRegistry, base: str, aut_user_auth_wsgi_app: WebTestAppForCMK
 ) -> None:
     folder_name = "blablabla"
 
-    aut_user_auth_wsgi_app.post(
-        url=base + "/domain-types/folder_config/collections/all",
-        params=json.dumps(
-            {
-                "name": folder_name,
-                "title": folder_name,
-                "parent": "~",
-                "attributes": {"bake_agent_package": True},
-            }
-        ),
-        headers={"Accept": "application/json"},
-        content_type="application/json",
-        status=200,
-    )
+    clients.Folder.create(
+        folder_name=folder_name,
+        title=folder_name,
+        parent="~",
+        attributes={"bake_agent_package": True},
+    ).assert_status_code(200)
 
     # see if we get an outbound validation error on a single folder
-    aut_user_auth_wsgi_app.get(
-        url=base + "/objects/folder_config/~" + folder_name,
-        headers={"Accept": "application/json"},
-        status=200,
-    )
+    clients.Folder.get(folder_name=f"~{folder_name}").assert_status_code(200)
 
     # see if we get an outbound validation error on all folders
-    aut_user_auth_wsgi_app.get(
-        url=base + "/domain-types/folder_config/collections/all",
-        headers={"Accept": "application/json"},
-        status=200,
-    )
+    clients.Folder.get_all().assert_status_code(200)
 
 
 def test_delete_root_folder(

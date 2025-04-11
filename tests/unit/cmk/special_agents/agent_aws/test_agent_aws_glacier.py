@@ -3,7 +3,6 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=redefined-outer-name
 
 from argparse import Namespace as Args
 from collections.abc import Sequence
@@ -71,7 +70,7 @@ def get_glacier_sections() -> GetGlacierSections:
 
         distributor = ResultDistributor()
 
-        # TODO: FakeGlacierClient shoud actually subclass GlacierClient, etc.
+        # TODO: FakeGlacierClient should actually subclass GlacierClient, etc.
         glacier_limits = GlacierLimits(fake_glacier_client, region, config, distributor)  # type: ignore[arg-type]
         glacier = Glacier(fake_glacier_client, region, config)  # type: ignore[arg-type]
 

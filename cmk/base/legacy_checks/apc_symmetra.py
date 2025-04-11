@@ -8,13 +8,14 @@
 
 import time
 
-from cmk.base.check_api import LegacyCheckDefinition
 from cmk.base.check_legacy_includes.elphase import check_elphase
 from cmk.base.check_legacy_includes.temperature import check_temperature
-from cmk.base.config import check_info
 
+from cmk.agent_based.legacy.v0_unstable import LegacyCheckDefinition
 from cmk.agent_based.v2 import render, SNMPTree
 from cmk.plugins.lib.apc import DETECT
+
+check_info = {}
 
 # .1.3.6.1.4.1.318.1.1.1.2.1.1.0 2
 # .1.3.6.1.4.1.318.1.1.1.4.1.1.0 2
@@ -64,6 +65,7 @@ def parse_apc_symmetra(string_table):
 
     # some numeric fields may be empty
     (
+        ups_comm_status,
         battery_status,
         output_status,
         battery_capacity,
@@ -85,6 +87,7 @@ def parse_apc_symmetra(string_table):
     self_test_in_progress = output_state_bitmask & 1 << 35 != 0
 
     for key, val in [
+        ("ups_comm_status", ups_comm_status),
         ("status", battery_status),
         ("output", output_status),
         ("self_test", self_test_in_progress),
@@ -128,10 +131,13 @@ def inventory_apc_symmetra(parsed):
         yield None, {}
 
 
-def check_apc_symmetra(_no_item, params, parsed):  # pylint: disable=too-many-branches
+def check_apc_symmetra(_no_item, params, parsed):
     data = parsed.get("status")
     if data is None:
         return
+
+    if data.get("ups_comm_status") == "2":
+        yield 3, "UPS communication lost"
 
     battery_status = data.get("status")
     output_status = data.get("output")
@@ -220,10 +226,13 @@ def check_apc_symmetra(_no_item, params, parsed):  # pylint: disable=too-many-br
             "3": " (calibration in progress)",
         }.get(calib_result, " (calibration unexpected(%s))" % calib_result)
 
-        yield state, "Output status: {}{}{}".format(
-            state_readable,
-            calib_text,
-            " (self-test running)" if self_test_in_progress else "",
+        yield (
+            state,
+            "Output status: {}{}{}".format(
+                state_readable,
+                calib_text,
+                " (self-test running)" if self_test_in_progress else "",
+            ),
         )
 
     if battery_capacity:
@@ -242,9 +251,11 @@ def check_apc_symmetra(_no_item, params, parsed):  # pylint: disable=too-many-br
             state = 1
             levelstxt = f" (warn/crit below {warn_cap:.1f}%/{crit_cap:.1f}%)"
 
-        yield state, "Capacity: %d%%%s" % (battery_capacity, levelstxt), [
-            ("capacity", battery_capacity, warn_cap, crit_cap, 0, 100)
-        ]
+        yield (
+            state,
+            "Capacity: %d%%%s" % (battery_capacity, levelstxt),
+            [("capacity", battery_capacity, warn_cap, crit_cap, 0, 100)],
+        )
 
     if battery_time_remain:
         battery_time_remain = float(battery_time_remain) / 100.0
@@ -270,15 +281,13 @@ def check_apc_symmetra(_no_item, params, parsed):  # pylint: disable=too-many-br
             perfdata = [("runtime", battery_time_remain / 60.0)]
 
         if state:
-            levelstxt = " (warn/crit below {}/{})".format(
-                render.timespan(battery_time_warn),
-                render.timespan(battery_time_crit),
-            )
+            levelstxt = f" (warn/crit below {render.timespan(battery_time_warn)}/{render.timespan(battery_time_crit)})"
 
         yield state, f"Time remaining: {battery_time_remain_readable}{levelstxt}", perfdata
 
 
 check_info["apc_symmetra"] = LegacyCheckDefinition(
+    name="apc_symmetra",
     detect=DETECT,
     fetch=[
         SNMPTree(
@@ -288,6 +297,7 @@ check_info["apc_symmetra"] = LegacyCheckDefinition(
         SNMPTree(
             base=".1.3.6.1.4.1.318.1.1.1",
             oids=[
+                "8.1.0",
                 "2.1.1.0",
                 "4.1.1.0",
                 "2.2.1.0",
@@ -347,6 +357,7 @@ def check_apc_symmetra_temp(item, params, parsed):
 
 
 check_info["apc_symmetra.temp"] = LegacyCheckDefinition(
+    name="apc_symmetra_temp",
     service_name="Temperature %s",
     sections=["apc_symmetra"],
     discovery_function=inventory_apc_symmetra_temp,
@@ -381,6 +392,7 @@ def check_apc_symmetra_elphase(item, params, parsed):
 
 
 check_info["apc_symmetra.elphase"] = LegacyCheckDefinition(
+    name="apc_symmetra_elphase",
     service_name="Phase %s",
     sections=["apc_symmetra"],
     discovery_function=inventory_apc_symmetra_elphase,

@@ -3,13 +3,15 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
+
 """Editor for global settings in main.mk and modes for these global
 settings"""
 
 import abc
-from collections.abc import Callable, Collection, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from typing import Any, Final
+
+from cmk.ccc.exceptions import MKGeneralException
 
 import cmk.gui.watolib.changes as _changes
 from cmk.gui import forms
@@ -50,23 +52,31 @@ from cmk.gui.watolib.config_domain_name import (
     ConfigVariable,
     ConfigVariableGroup,
 )
-from cmk.gui.watolib.config_domains import ConfigDomainCore
+from cmk.gui.watolib.config_domains import ConfigDomainCACertificates, ConfigDomainCore
 from cmk.gui.watolib.global_settings import load_configuration_settings, save_global_settings
 from cmk.gui.watolib.hosts_and_folders import folder_preserving_link
 from cmk.gui.watolib.mode import mode_url, ModeRegistry, redirect, WatoMode
 from cmk.gui.watolib.search import (
     ABCMatchItemGenerator,
-    match_item_generator_registry,
     MatchItem,
+    MatchItemGeneratorRegistry,
     MatchItems,
 )
 
-from cmk.ccc.exceptions import MKGeneralException
 
-
-def register(mode_registry: ModeRegistry) -> None:
-    mode_registry.register(ModeEditGlobals)
-    mode_registry.register(ModeEditGlobalSetting)
+def register(
+    mode_registry: ModeRegistry,
+    match_item_generator_registry: MatchItemGeneratorRegistry,
+) -> None:
+    mode_registry.register(DefaultModeEditGlobals)
+    mode_registry.register(DefaultModeEditGlobalSetting)
+    match_item_generator_registry.register(
+        MatchItemGeneratorSettings(
+            "global_settings",
+            _("Global settings"),
+            DefaultModeEditGlobals,
+        )
+    )
 
 
 class ABCGlobalSettingsMode(WatoMode):
@@ -90,11 +100,9 @@ class ABCGlobalSettingsMode(WatoMode):
     def _get_groups(show_all: bool) -> Iterable[ConfigVariableGroup]:
         groups = []
 
-        for group_class in config_variable_group_registry.values():
-            group = group_class()
+        for group in config_variable_group_registry.values():
             add = False
-            for config_variable_class in group.config_variables():
-                config_variable = config_variable_class()
+            for config_variable in group.config_variables():
                 if not show_all and (
                     not config_variable.in_global_settings()
                     or not config_variable.domain().in_global_settings
@@ -119,10 +127,10 @@ class ABCGlobalSettingsMode(WatoMode):
     def _should_show_config_variable(self, config_variable: ConfigVariable) -> bool:
         varname = config_variable.ident()
 
-        if not config_variable.domain().enabled():
+        if not (domain := config_variable.domain()).enabled():
             return False
 
-        if config_variable.domain() == ConfigDomainCore and varname not in self._default_values:
+        if isinstance(domain, ConfigDomainCore) and varname not in self._default_values:
             if active_config.debug:
                 raise MKGeneralException(
                     "The configuration variable <tt>%s</tt> is unknown to "
@@ -168,15 +176,14 @@ class ABCGlobalSettingsMode(WatoMode):
                 group,
                 (
                     config_variable
-                    for config_variable_class in group.config_variables()
-                    for config_variable in [config_variable_class()]
+                    for config_variable in group.config_variables()
                     if self._should_show_config_variable(config_variable)
                 ),
             )
             for group in sorted(self._groups(), key=lambda g: g.sort_index())
         )
 
-    def _show_configuration_variables(self) -> None:  # pylint: disable=too-many-branches
+    def _show_configuration_variables(self) -> None:
         search = self._search
 
         at_least_one_painted = False
@@ -292,7 +299,7 @@ class ABCEditGlobalSettingMode(WatoMode):
     def _from_vars(self):
         self._varname = request.get_ascii_input_mandatory("varname")
         try:
-            self._config_variable = config_variable_registry[self._varname]()
+            self._config_variable = config_variable_registry[self._varname]
             self._valuespec = self._config_variable.valuespec()
         except KeyError:
             raise MKUserError(
@@ -360,6 +367,7 @@ class ABCEditGlobalSettingMode(WatoMode):
             new_value = self._valuespec.from_html_vars("ve")
             self._valuespec.validate_value(new_value, "ve")
 
+            current = self._current_settings.get(self._varname)
             self._current_settings[self._varname] = new_value
             msg = HTML.without_escaping(
                 _("Changed global configuration variable %s to %s.")
@@ -370,12 +378,18 @@ class ABCEditGlobalSettingMode(WatoMode):
             )
 
         self._save()
+        if self._varname == "trusted_certificate_authorities":
+            ConfigDomainCACertificates.log_changes(current, new_value)
         _changes.add_change(
             "edit-configvar",
             msg,
             sites=self._affected_sites(),
-            domains=[self._config_variable.domain()],
+            domains=[(domain := self._config_variable.domain())],
             need_restart=self._config_variable.need_restart(),
+            need_apache_reload=self._config_variable.need_apache_reload(),
+            domain_settings={
+                domain.ident(): {"need_apache_reload": self._config_variable.need_apache_reload()}
+            },
         )
 
         return redirect(self._back_url())
@@ -409,7 +423,10 @@ class ABCEditGlobalSettingMode(WatoMode):
         value = self._current_settings.get(
             self._varname, self._global_settings.get(self._varname, defvalue)
         )
+        domain_hint = self._config_variable.domain_hint()
 
+        if domain_hint:
+            html.show_warning(domain_hint)
         hint = self._config_variable.hint()
         if hint:
             html.show_warning(hint)
@@ -460,8 +477,6 @@ class ABCEditGlobalSettingMode(WatoMode):
 
 
 class ModeEditGlobals(ABCGlobalSettingsMode):
-    page_menu_dropdowns_hook: Callable[[], PageMenuDropdown] | None = None
-
     @classmethod
     def name(cls) -> str:
         return "globalvars"
@@ -470,9 +485,15 @@ class ModeEditGlobals(ABCGlobalSettingsMode):
     def static_permissions() -> Collection[PermissionName]:
         return ["global"]
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        page_menu_dropdowns_postprocess: Callable[
+            [Sequence[PageMenuDropdown]], list[PageMenuDropdown]
+        ],
+    ) -> None:
         super().__init__()
         self._current_settings = dict(load_configuration_settings())
+        self._page_menu_dropdowns_postprocess = page_menu_dropdowns_postprocess
 
     def title(self) -> str:
         if self._search:
@@ -481,9 +502,6 @@ class ModeEditGlobals(ABCGlobalSettingsMode):
 
     def page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
         dropdowns = []
-
-        if ModeEditGlobals.page_menu_dropdowns_hook is not None:
-            dropdowns.append(ModeEditGlobals.page_menu_dropdowns_hook())
 
         dropdowns.append(
             PageMenuDropdown(
@@ -497,6 +515,8 @@ class ModeEditGlobals(ABCGlobalSettingsMode):
                 ],
             ),
         )
+
+        dropdowns = self._page_menu_dropdowns_postprocess(dropdowns)
 
         menu = PageMenu(
             dropdowns=dropdowns,
@@ -521,7 +541,7 @@ class ModeEditGlobals(ABCGlobalSettingsMode):
 
         action = request.var("_action")
 
-        config_variable = config_variable_registry[varname]()
+        config_variable = config_variable_registry[varname]
         def_value = self._default_values[varname]
 
         if not transactions.check_transaction():
@@ -540,8 +560,12 @@ class ModeEditGlobals(ABCGlobalSettingsMode):
         _changes.add_change(
             "edit-configvar",
             msg,
-            domains=[config_variable.domain()],
+            domains=[(domain := config_variable.domain())],
             need_restart=config_variable.need_restart(),
+            need_apache_reload=config_variable.need_apache_reload(),
+            domain_settings={
+                domain.ident(): {"need_apache_reload": config_variable.need_apache_reload()}
+            },
         )
 
         if action == "_reset":
@@ -550,6 +574,11 @@ class ModeEditGlobals(ABCGlobalSettingsMode):
 
     def page(self) -> None:
         self._show_configuration_variables()
+
+
+class DefaultModeEditGlobals(ModeEditGlobals):
+    def __init__(self) -> None:
+        super().__init__(list)
 
 
 class ModeEditGlobalSetting(ABCEditGlobalSettingMode):
@@ -573,6 +602,12 @@ class ModeEditGlobalSetting(ABCEditGlobalSettingMode):
 
     def _back_url(self) -> str:
         return ModeEditGlobals.mode_url()
+
+
+class DefaultModeEditGlobalSetting(ModeEditGlobalSetting):
+    @classmethod
+    def parent_mode(cls) -> type[WatoMode] | None:
+        return DefaultModeEditGlobals
 
 
 def is_a_checkbox(vs: ValueSpec) -> bool:
@@ -632,12 +667,3 @@ class MatchItemGeneratorSettings(ABCMatchItemGenerator):
     @property
     def is_localization_dependent(self) -> bool:
         return True
-
-
-match_item_generator_registry.register(
-    MatchItemGeneratorSettings(
-        "global_settings",
-        _("Global settings"),
-        ModeEditGlobals,
-    )
-)

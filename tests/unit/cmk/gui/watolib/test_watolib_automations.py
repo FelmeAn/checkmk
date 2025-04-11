@@ -5,6 +5,7 @@
 
 import logging
 import os
+import threading
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -12,14 +13,14 @@ from typing import Any
 
 import pytest
 
+from cmk.ccc import store
+from cmk.ccc import version as cmk_version
+
 from cmk.automations.results import ABCAutomationResult, ResultTypeRegistry, SerializedResult
 
 from cmk.gui.background_job import BackgroundProcessInterface
 from cmk.gui.http import request
 from cmk.gui.watolib import automations
-
-from cmk.ccc import store
-from cmk.ccc import version as cmk_version
 
 RESULT: object = None
 
@@ -97,12 +98,14 @@ class TestCheckmkAutomationBackgroundJob:
             )
             job = automations.CheckmkAutomationBackgroundJob("job_id")
             os.makedirs(job.get_work_dir())
-            job._execute_automation(  # pylint: disable=protected-access
+            job._execute_automation(
                 BackgroundProcessInterface(
                     job.get_work_dir(),
                     "job_id",
                     logging.getLogger(),
-                    lambda: nullcontext(),  # pylint: disable=unnecessary-lambda
+                    threading.Event(),
+                    lambda: nullcontext(),
+                    open(os.devnull, "w"),
                 ),
                 api_request,
             )
@@ -129,12 +132,14 @@ class TestCheckmkAutomationBackgroundJob:
             )
             job = automations.CheckmkAutomationBackgroundJob("job_id")
             os.makedirs(job.get_work_dir())
-            job._execute_automation(  # pylint: disable=protected-access
+            job._execute_automation(
                 BackgroundProcessInterface(
                     job.get_work_dir(),
                     "job_id",
                     logging.getLogger(),
-                    lambda: nullcontext(),  # pylint: disable=unnecessary-lambda
+                    threading.Event(),
+                    lambda: nullcontext(),
+                    open(os.devnull, "w"),
                 ),
                 api_request,
             )

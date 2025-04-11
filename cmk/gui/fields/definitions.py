@@ -3,24 +3,27 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
 """A few upgraded Fields which handle some OpenAPI validation internally."""
+
 import ast
 import json
 import logging
 import re
 import typing
 import uuid
-import warnings
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, MutableMapping
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+import marshmallow
 from cryptography.x509 import CertificateSigningRequest, load_pem_x509_csr
 from cryptography.x509.oid import NameOID
 from marshmallow import fields as _fields
-from marshmallow import post_load, pre_dump, utils, ValidationError
+from marshmallow import ValidationError
 from marshmallow_oneofschema import OneOfSchema
+
+from cmk.ccc import version
+from cmk.ccc.exceptions import MKException
 
 from cmk.utils import paths
 from cmk.utils.hostaddress import HostAddress, HostName
@@ -29,15 +32,16 @@ from cmk.utils.livestatus_helpers.queries import Query
 from cmk.utils.livestatus_helpers.tables import Hostgroups, Hosts, Servicegroups
 from cmk.utils.livestatus_helpers.types import Column, Table
 from cmk.utils.regex import regex, REGEX_ID
-from cmk.utils.tags import TagGroupID, TagID
+from cmk.utils.tags import TagConfig, TagGroup, TagGroupID
 from cmk.utils.user import UserId
 
 from cmk.gui import sites
-from cmk.gui.config import builtin_role_ids
+from cmk.gui.agent_registration import CONNECTION_MODE_FIELD
+from cmk.gui.config import active_config, builtin_role_ids
 from cmk.gui.customer import customer_api, SCOPE_GLOBAL
 from cmk.gui.exceptions import MKUserError
-from cmk.gui.fields.base import BaseSchema, MultiNested, ValueTypedDictSchema
-from cmk.gui.fields.utils import attr_openapi_schema, ObjectContext, ObjectType, tree_to_expr
+from cmk.gui.fields.base import BaseSchema, MultiNested
+from cmk.gui.fields.utils import tree_to_expr
 from cmk.gui.groups import GroupName, GroupType
 from cmk.gui.logged_in import user
 from cmk.gui.permissions import permission_registry
@@ -45,16 +49,16 @@ from cmk.gui.site_config import configured_sites
 from cmk.gui.userdb import load_users
 from cmk.gui.watolib import userroles
 from cmk.gui.watolib.groups_io import load_group_information
-from cmk.gui.watolib.host_attributes import host_attribute
+from cmk.gui.watolib.host_attributes import ABCHostAttribute, all_host_attributes, host_attribute
 from cmk.gui.watolib.hosts_and_folders import Folder, folder_tree, Host
 from cmk.gui.watolib.passwords import contact_group_choices, password_exists
-from cmk.gui.watolib.tags import load_tag_group
+from cmk.gui.watolib.sites import site_management_registry
+from cmk.gui.watolib.tags import load_tag_config_read_only
 
-from cmk.ccc import version
-from cmk.ccc.exceptions import MKException
-from cmk.fields import base, DateTime, validators
+from cmk.fields import base, Boolean, DateTime, String, validators
 
 _logger = logging.getLogger(__name__)
+_CONNECTION_ID_PATTERN = "^[-a-z0-9A-Z_]+$"
 
 
 class PythonString(base.String):
@@ -261,7 +265,7 @@ class NotExprSchema(BaseSchema):
 
     op = base.String(description="The operator. In this case `not`.")
     expr = base.Nested(
-        lambda: ExprSchema(),  # pylint: disable=unnecessary-lambda
+        lambda: ExprSchema(),
         description="The query expression to negate.",
     )
 
@@ -273,13 +277,26 @@ class LogicalExprSchema(BaseSchema):
     # many=True does not work here for some reason.
     expr = base.List(
         base.Nested(
-            lambda *a, **kw: ExprSchema(*a, **kw),  # pylint: disable=unnecessary-lambda
+            lambda *a, **kw: ExprSchema(*a, **kw),
             description="A list of query expressions to combine.",
         )
     )
 
 
-class ExprSchema(OneOfSchema):
+class CmkOneOfSchema(OneOfSchema):
+    context: dict[object, object] = {}
+
+    def __init__(
+        self,
+        *args,
+        **kwargs,
+    ):
+        context = kwargs.pop("context", {})
+        super().__init__(*args, **kwargs)
+        self.context = context
+
+
+class ExprSchema(CmkOneOfSchema):
     """Top level class for query expression schema
 
     Operators can be one of: AND, OR
@@ -361,13 +378,22 @@ class ExprSchema(OneOfSchema):
 
 
 class _ExprNested(base.Nested):
-    def _load(self, value, data, partial=None):
-        _data = super()._load(value, data, partial=partial)
+    def __init__(
+        self,
+        *args,
+        **kwargs,
+    ):
+        context = kwargs.pop("context", {})
+        super().__init__(*args, **kwargs)
+        self.context = context
+
+    def _load(self, value, partial=None):
+        _data = super()._load(value, partial=partial)
         return tree_to_expr(_data, table=self.metadata["table"])
 
 
 def query_field(
-    table: type[Table], required: bool = False, example: str | None = None
+    table: type[Table], required: bool = False, example: str | dict[str, object] | None = None
 ) -> base.Nested:
     """Returns a Nested ExprSchema Field which validates a Livestatus query.
 
@@ -377,7 +403,8 @@ def query_field(
         required:
             Whether the field shall be required.
         example:
-            optional query example
+            optional query example. For query parameters this should be a string, within the request
+            body string and nested JSON is allowed, so a dict example is better.
 
     Returns:
         A marshmallow Nested field.
@@ -611,7 +638,11 @@ class HostField(base.String):
         host = Host.host(value)
         self._confirm_user_has_permission(host)
 
-        if self._skip_validation_on_view and self.context.get("object_context") == "view":
+        if (
+            self._skip_validation_on_view
+            and self.context is not None
+            and self.context.get("object_context") == "view"
+        ):
             return
 
         # Regex gets checked through the `pattern` of the String instance
@@ -703,6 +734,90 @@ def validate_custom_host_attributes(
             _logger.error("Error validating %s: %s", name, str(exc))
 
     return host_attributes
+
+
+class CustomHostAttributesAndTagGroups(BaseSchema):
+    class Meta:
+        unknown = marshmallow.INCLUDE
+
+    # Set it to true on create and update schemas to raise an error if a readonly attribute is passed
+    _raise_error_if_attribute_is_readonly = False
+
+    @marshmallow.post_load(pass_original=True)
+    def _validate_extra_attributes(
+        self,
+        result_data: dict[str, Any],
+        original_data: MutableMapping[str, Any],
+        **_unused_args: Any,
+    ) -> dict[str, Any]:
+        for field in self.fields:
+            original_data.pop(field, None)
+
+        if not original_data:
+            return result_data
+
+        host_attributes = all_host_attributes(active_config)
+        tag_group_config = load_tag_config_read_only()
+
+        for name, value in original_data.items():
+            if tag_group := self._get_custom_tag_group(name, tag_group_config):
+                self._validate_tag_group(tag_group, value)
+
+            elif host_attribute := self._get_custom_host_attribute(name, host_attributes):
+                self._validate_attribute(host_attribute, value)
+
+            else:
+                self._raise_error(f"Unknown Attribute: {name!r}: {value!r}")
+
+            result_data[name] = value
+        return result_data
+
+    @marshmallow.post_dump(pass_original=True)
+    def _add_tags_and_custom_attributes_back(
+        self, dump_data: dict[str, Any], original_data: dict[str, Any], **_kwargs: Any
+    ) -> dict[str, Any]:
+        # Custom attributes and tags are thrown away during validation as they have no field in the schema.
+        # So we dump them back in here.
+        # TODO: This code complies with the behavior enforced by the test_openapi_host_has_deleted_custom_attributes
+        #       test. However more research is needed to determine if it should change.
+        original_data.update(dump_data)
+        return original_data
+
+    def _get_custom_tag_group(self, tag_name: str, tag_config: TagConfig) -> TagGroup | None:
+        return tag_config.get_tag_group(TagGroupID(tag_name[4:]))
+
+    def _get_custom_host_attribute(
+        self, attribute_name: str, attributes: dict[str, ABCHostAttribute]
+    ) -> ABCHostAttribute | None:
+        try:
+            attribute = attributes[attribute_name]
+            if not attribute.from_config():
+                return None
+
+            return attribute
+
+        except KeyError:
+            return None
+
+    def _validate_attribute(self, host_attribute: ABCHostAttribute, value: object) -> None:
+        if self._raise_error_if_attribute_is_readonly and not host_attribute.editable():
+            self._raise_error(f"Attribute {host_attribute.name()!r} is readonly.")
+
+        if not isinstance(value, str):
+            self._raise_error(f"Attribute {host_attribute.name()!r} must be a string.")
+
+        try:
+            host_attribute.validate_input(value, "")
+
+        except MKUserError as exc:
+            self._raise_error(f"{host_attribute.name()}: {str(exc)}")
+
+    def _validate_tag_group(self, tag_group: TagGroup, value: object) -> None:
+        if value not in tag_group.get_tag_ids():
+            self._raise_error(f"Invalid value for tag-group {tag_group.title!r}: {value!r}")
+
+    def _raise_error(self, message: str) -> None:
+        raise ValidationError(message)
 
 
 def ensure_string(value):
@@ -839,179 +954,6 @@ class HostnameOrIP(base.String):
         return "pass"
 
 
-class CustomHostAttributes(ValueTypedDictSchema):
-    value_type = ValueTypedDictSchema.field(
-        base.String(
-            description="Each tag is a mapping of string to string",
-            validate=ensure_string,
-        )
-    )
-
-    @post_load
-    def _valid(self, data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        # NOTE
-        # If an attribute gets deleted AFTER it has already been set to a host or a folder,
-        # then this would break here. We therefore can't validate outbound data as thoroughly
-        # because our own data can be inherently inconsistent.
-        if self.context["direction"] == "outbound":  # pylint: disable=no-else-return
-            return validate_custom_host_attributes(data, "warn")
-        else:
-            return validate_custom_host_attributes(data, "raise")
-
-
-class TagGroupAttributes(ValueTypedDictSchema):
-    """Schema to validate tag groups
-
-    Examples:
-
-        >>> schema = TagGroupAttributes()
-        >>> schema.load({"foo": "bar"})
-        Traceback (most recent call last):
-        ...
-        marshmallow.exceptions.ValidationError: {'foo': "Tag group name must start with 'tag_'"}
-
-        >>> schema.load({"tag_foo": "bar"})
-        Traceback (most recent call last):
-        ...
-        marshmallow.exceptions.ValidationError: {'tag_foo': 'No such tag-group.'}
-
-        >>> schema.load({"tag_agent": "flint"})
-        Traceback (most recent call last):
-        ...
-        marshmallow.exceptions.ValidationError: {'tag_agent': "Invalid value for tag-group: 'flint'"}
-
-        >>> schema.load({"tag_agent": "cmk-agent"})
-        {'tag_agent': 'cmk-agent'}
-
-        >>> schema.dump({"tag_agent": "cmk-agent"})
-        {'tag_agent': 'cmk-agent'}
-
-        >>> schema.load({"tag_agent": None})
-        Traceback (most recent call last):
-        ...
-        marshmallow.exceptions.ValidationError: {'tag_agent': 'Invalid value for tag-group: None'}
-
-        >>> schema.dump({"tag_agent": None})
-        {'tag_agent': None}
-
-    """
-
-    value_type = ValueTypedDictSchema.field(
-        base.String(
-            description=(
-                "The value of the tag-group attribute. Each tag is a mapping of string to string, "
-                "where the tag name must start with `tag_`."
-            ),
-            allow_none=True,
-        )
-    )
-
-    def _validate_tag_group(self, name: str) -> set[TagID | None]:
-        if not name.startswith("tag_"):
-            raise ValidationError({name: "Tag group name must start with 'tag_'"})
-
-        try:
-            tag_group = load_tag_group(TagGroupID(name[4:]))
-        except MKUserError as exc:
-            raise ValidationError({name: str(exc)}) from exc
-
-        if tag_group is None:
-            raise ValidationError({name: "No such tag-group."})
-
-        # FIXME: This should eventually be moved into TagGroup
-
-        # Checkbox tags are allowed to have no value at all. This means they are deactivated.
-        allowed_ids = tag_group.get_tag_ids()
-        if tag_group.is_checkbox_tag_group:
-            allowed_ids.add(None)
-
-        return allowed_ids
-
-    @pre_dump
-    def _pre_dump(self, data: dict[str, str], **kwargs: Any) -> dict[str, str]:
-        rv: dict[str, str] = {}
-        for key, value in data.items():
-            allowed_ids = self._validate_tag_group(key)
-
-            if value not in allowed_ids:
-                warnings.warn(f"Invalid value for tag-group {key}: {value!r}")
-
-            rv[key] = value
-
-        return rv
-
-    @post_load
-    def _post_load(self, data: dict[str, str], **kwargs: Any) -> dict[str, str]:
-        rv: dict[str, str] = {}
-        for key, value in data.items():
-            allowed_ids = self._validate_tag_group(key)
-
-            if value not in allowed_ids:
-                raise ValidationError({key: f"Invalid value for tag-group: {value!r}"})
-
-            rv[key] = value
-
-        return rv
-
-
-def host_attributes_field(
-    object_type: ObjectType,
-    object_context: ObjectContext,
-    direction: typing.Literal["inbound", "outbound"],
-    description: str | None = None,
-    example: Any | None = None,
-    required: bool = False,
-    load_default: Any = utils.missing,
-    many: bool = False,
-) -> _fields.Field:
-    """Build an Attribute Field
-
-    Args:
-        object_type:
-            May be one of 'folder', 'host' or 'cluster'.
-
-        object_context:
-            May be 'create', 'update' or 'view'. Deletion is considered as 'update'.
-
-        direction:
-            If the data is *coming from* the user (inbound) or *going to* the user (outbound).
-
-        description:
-            A descriptive text of this field. Required.
-
-        example:
-            An example for the OpenAPI documentation. Required.
-
-        required:
-            Whether the field must be sent by the client or is option.
-
-        load_default:
-        many:
-
-    Returns:
-
-    """
-    if description is None:
-        # SPEC won't validate without description, though the error message is very obscure, so we
-        # clarify this here by force.
-        raise ValueError("description is necessary.")
-
-    return MultiNested(
-        [
-            lambda: attr_openapi_schema(object_type, object_context),
-            CustomHostAttributes,
-            TagGroupAttributes,
-        ],
-        metadata={"context": {"object_context": object_context, "direction": direction}},
-        merged=True,  # to unify both models
-        description=description,
-        example=example,
-        many=many,
-        load_default=dict if load_default is utils.missing else utils.missing,
-        required=required,
-    )
-
-
 class SiteField(base.String):
     """A field representing a site name."""
 
@@ -1036,7 +978,11 @@ class SiteField(base.String):
         if self.allow_all_value and value == "all":
             return
 
-        if self.presence == "might_not_exist_on_view" and self.context["object_context"] == "view":
+        if (
+            self.presence == "might_not_exist_on_view"
+            and self.context is not None
+            and self.context.get("object_context") == "view"
+        ):
             return
 
         if self.presence in ["should_exist", "might_not_exist_on_view"]:
@@ -1051,12 +997,6 @@ class SiteField(base.String):
         if self.presence == "might_not_exist_on_view" and value not in configured_sites().keys():
             return "Unknown Site: " + value
         return super()._serialize(value, attr, obj, **kwargs)
-
-
-def customer_field(**kw):
-    if version.edition(paths.omd_root) is version.Edition.CME:
-        return _CustomerField(**kw)
-    return None
 
 
 class _CustomerField(base.String):
@@ -1106,6 +1046,40 @@ class _CustomerField(base.String):
     def _deserialize(self, value, attr, data, **kwargs):
         value = super()._deserialize(value, attr, data, **kwargs)
         return None if value == "global" else value
+
+
+def customer_field(**kw: Any) -> _CustomerField | None:
+    if version.edition(paths.omd_root) is version.Edition.CME:
+        return _CustomerField(**kw)
+    return None
+
+
+def customer_field_response(**kw: Any) -> _CustomerField | None:
+    if "description" not in kw:
+        kw["description"] = "The customer for which the object is configured."
+    return customer_field(**kw)
+
+
+def bake_agent_field() -> Boolean | None:
+    """Enterprise specific implementation of host attribute field
+
+    Notes:
+        * takes inspiration of the customer field implementation (which is not the best) but
+        deemed acceptable as the intention is to move away from the marshmallow implementation
+    """
+    if version.edition(paths.omd_root) is not version.Edition.CRE:
+        return Boolean(
+            description="Bake agent packages for this folder even if it is empty.",
+        )
+    return None
+
+
+def agent_connection_field() -> String | None:
+    """CME and CCE editions only implementation of cmk_agent_connection field"""
+    if version.edition(paths.omd_root) in [version.Edition.CME, version.Edition.CCE]:
+        return CONNECTION_MODE_FIELD
+
+    return None
 
 
 def verify_group_exists(group_type: GroupType, name: GroupName) -> bool:
@@ -1209,11 +1183,11 @@ class PasswordIdent(base.String):
             raise self.make_error("should_not_exist", name=value)
 
 
-class PasswordOwner(base.String):
-    """A field representing a password owner group"""
+class PasswordEditableBy(base.String):
+    """A field representing which group can edit a password"""
 
     default_error_messages = {
-        "invalid": "Specified owner value is not valid: {name!r}",
+        "invalid": "Specified contact group does not exist or you do not have the necessary permissions: {name!r}",
     }
 
     def __init__(
@@ -1231,17 +1205,18 @@ class PasswordOwner(base.String):
         )
 
     def _validate(self, value):
-        """Verify if the specified owner is valid for the logged-in user
+        """Verify if the specified editor is valid for the logged-in user
 
-        Non-admin users cannot specify admin as the owner
-
+        Non-admin users cannot specify admin as the editor
         """
         super()._validate(value)
-        permitted_owners = [group[0] for group in contact_group_choices(only_own=True)]
         if user.may("wato.edit_all_passwords"):
-            permitted_owners.append("admin")
+            permitted_group_ids = [group[0] for group in contact_group_choices(only_own=False)]
+            permitted_group_ids.append("admin")
+        else:
+            permitted_group_ids = [group[0] for group in contact_group_choices(only_own=True)]
 
-        if value not in permitted_owners:
+        if value not in permitted_group_ids:
             raise self.make_error("invalid", name=value)
 
 
@@ -1478,6 +1453,42 @@ class Username(base.String):
             raise self.make_error("should_not_exist", username=value)
 
 
+class ConnectionIdentifier(base.String):
+    default_error_messages = {
+        "should_exist": "ConnectionId missing: {connection_id!r}",
+        "should_not_exist": "ConnectionId {connection_id!r} already exists",
+        "invalid_name": "ConnectionId {connection_id!r} is not a valid checkmk ConnectionId",
+    }
+
+    def __init__(
+        self,
+        example: str,
+        required: bool = True,
+        validate: Callable[[object], bool] | Collection[Callable[[object], bool]] | None = None,
+        presence: Literal["should_exist", "should_not_exist", "ignore"] = "ignore",
+        **kwargs: Any,
+    ):
+        self._presence = presence
+        super().__init__(
+            example=example,
+            required=required,
+            validate=validate,
+            pattern=_CONNECTION_ID_PATTERN,
+            **kwargs,
+        )
+
+    def _validate(self, value):
+        super()._validate(value)
+        user.need_permission("wato.sites")
+
+        site_mgmt = site_management_registry["site_management"]
+        exists = site_mgmt.broker_connection_id_exists(value)
+        if self._presence == "should_exist" and not exists:
+            raise self.make_error("should_exist", connection_id=value)
+        if self._presence == "should_not_exist" and exists:
+            raise self.make_error("should_not_exist", connection_id=value)
+
+
 class FolderIDField(FolderField):
     """This field represents a folder's path.
 
@@ -1537,9 +1548,9 @@ class FolderIDField(FolderField):
 
 
 __all__ = [
-    "host_attributes_field",
     "column_field",
     "customer_field",
+    "customer_field_response",
     "DateTime",
     "ExprSchema",
     "FolderField",
@@ -1549,8 +1560,8 @@ __all__ = [
     "HostField",
     "HostnameOrIP",
     "MultiNested",
+    "PasswordEditableBy",
     "PasswordIdent",
-    "PasswordOwner",
     "PasswordShare",
     "PermissionField",
     "PythonString",

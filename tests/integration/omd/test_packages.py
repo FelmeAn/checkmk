@@ -3,32 +3,37 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-import os
-import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
 
 import pytest
 
 from tests.testlib.pytest_helpers.calls import abort_if_not_containerized
 from tests.testlib.site import Site
 
-StreamType = Literal["stderr", "stdout"]
-
 
 @dataclass(frozen=True)
 class MonitoringPlugin:
+    """Data corresponding to 3rd party plugins.
+
+    These plugins are maintained by 'Monitoring Plugins'
+    (https://www.monitoring-plugins.org/).
+    """
+
     binary_name: str
     path: str = "lib/nagios/plugins"
+    # by default, output the version of the plugin
     cmd_line_option: str = "-V"
-    expected: str = "v2.3.3"
+    expected: str = "v2.4.0"
 
 
 @dataclass(frozen=True)
 class CheckmkActiveCheck:
+    """Data corresponding to Checkmk active checks."""
+
     binary_name: str
     path: str = "lib/nagios/plugins"
+    usage_text: str = "usage"
 
     @property
     def cmd_line_option(self) -> str:
@@ -36,7 +41,7 @@ class CheckmkActiveCheck:
 
     @property
     def expected(self) -> str:
-        return f"usage: {self.binary_name} "
+        return f"{self.usage_text}: {self.binary_name} "
 
 
 Plugin = MonitoringPlugin | CheckmkActiveCheck
@@ -61,7 +66,6 @@ MONITORING_PLUGINS: Sequence[Plugin] = (
     MonitoringPlugin("check_icmp"),
     MonitoringPlugin("check_ide_smart"),
     MonitoringPlugin("check_imap"),
-    MonitoringPlugin("check_ircd"),
     MonitoringPlugin("check_jabber"),
     MonitoringPlugin("check_ldap"),
     MonitoringPlugin("check_ldaps"),
@@ -103,6 +107,8 @@ MONITORING_PLUGINS: Sequence[Plugin] = (
     MonitoringPlugin("urlize"),
     MonitoringPlugin("check_mysql"),
     MonitoringPlugin("check_mysql_query"),
+    CheckmkActiveCheck("check_httpv2", usage_text="Usage"),
+    CheckmkActiveCheck("check_always_crit"),
     CheckmkActiveCheck("check_sftp"),
     CheckmkActiveCheck(
         "check_mail",
@@ -144,33 +150,69 @@ MONITORING_PLUGINS: Sequence[Plugin] = (
     (pytest.param(p, id=f"{p.binary_name}") for p in MONITORING_PLUGINS),
 )
 def test_monitoring_plugins_can_be_executed(plugin: Plugin, site: Site) -> None:
+    """Validate the plugin's presence and version in the site."""
     abort_if_not_containerized(
         plugin.binary_name == "check_mysql"
     )  # What? Why? Is printing the version dangerous?
 
-    cmd_line = [os.path.join(site.root, plugin.path, plugin.binary_name), plugin.cmd_line_option]
-
-    p = site.execute(cmd_line, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    assert p.stdout and p.stderr  # for mypy
-
-    assert plugin.expected in p.stdout.read()
-
-    if plugin.binary_name == "check_sftp":
-        # remove this once `paramiko` is fixed.
-        assert "CryptographyDeprecationWarning" in p.stderr.read()
-    else:
-        assert not p.stderr.read()
+    cmd_line = [(site.root / plugin.path / plugin.binary_name).as_posix(), plugin.cmd_line_option]
+    # check=False; '<plugin-name> -V' returns in exit-code 3 for most plugins!
+    process = site.run(cmd_line, check=False)
+    assert plugin.expected in process.stdout, (
+        f"Expected command:'{' '.join(cmd_line)}'\nto result in output having '{plugin.expected}'!"
+    )
+    assert not process.stderr
 
 
 def test_heirloommailx(site: Site) -> None:
-    p = site.execute(["heirloom-mailx", "-V"], stdout=subprocess.PIPE)
-    version = p.stdout.read() if p.stdout else "<NO STDOUT>"
+    expected_version = "12.5"
+    process = site.run(cmd := ["heirloom-mailx", "-V"])
+    version = process.stdout if process.stdout else "<NO STDOUT>"
     # TODO: Sync this with a global version for heirloom (like we do it for python)
-    assert "12.5" in version
+    assert expected_version in version, (
+        f"Expected 'heirloom-mailx' version: {expected_version} in output! Command: "
+        f"`{' '.join(cmd)}`"
+    )
+
+
+def test_heirloompkgtools_pkgmk(site: Site) -> None:
+    process = site.run([tool := "pkgmk"], check=False)
+    message = process.stderr if process.stderr else "<NO STDERR>"
+    assert "pkgmk: ERROR: unable to find info for device <spool>" in message, (
+        f"'{tool}' is not present in Checkmk '{site.version.version}'!"
+    )
+
+
+def test_heirloompkgtools_pkgtrans(site: Site) -> None:
+    process = site.run([tool := "pkgtrans"], check=False)
+    message = process.stderr if process.stderr else "<NO STDERR>"
+    assert "usage: pkgtrans [-cinos] srcdev dstdev [pkg [pkg...]]" in message, (
+        f"'{tool}' is not present in Checkmk '{site.version.version}'!"
+    )
 
 
 def test_stunnel(site: Site) -> None:
-    p = site.execute(["stunnel", "-help"], stderr=subprocess.PIPE)
-    help_text = p.stderr.read() if p.stderr else ""
+    expected_version = "5.63"
+    process = site.run(cmd := ["stunnel", "-help"])
+    help_text = process.stderr if process.stderr else "<EXPECTED ERROR; OBSERVED NO ERROR>"
     # TODO: Sync this with a global version for stunnel (like we do it for python)
-    assert "stunnel 5.63" in help_text
+    assert f"stunnel {expected_version}" in help_text, (
+        f"Expected 'stunnel' version: {expected_version} in the output! Command: `{' '.join(cmd)}`"
+    )
+
+
+def test_unixcat(site: Site) -> None:
+    tool = "unixcat"
+    process = site.run([tool], check=False)
+    message = process.stderr if process.stderr else "<NO STDERR>"
+    assert "Usage: unixcat UNIX-socket" in message, (
+        f"'{tool}' is not present in Checkmk '{site.version.version}'!"
+    )
+
+
+def test_navicli(site: Site) -> None:
+    version = "7.33.9.1.84"
+    process = site.run([tool := "naviseccli", "-Help"], check=False)
+    help_text = process.stdout if process.stdout else "<EXPECTED OUTPUT; OBSERVED NO OUTPUT>"
+    # TODO: Sync this with a global version for navicli (like we do it for python)
+    assert f"Revision {version}" in help_text, f"Expected '{tool}' to have version: {version}!"

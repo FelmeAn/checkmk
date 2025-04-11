@@ -10,17 +10,12 @@ from typing import Literal
 
 import pytest
 
+from cmk.ccc.version import Edition, edition
+
 from cmk.utils.paths import omd_root
 
-from cmk.gui.config import active_config
-from cmk.gui.graphing import perfometer_info
-from cmk.gui.graphing._from_api import _compute_unit_info, _TemperatureUnitConverter
-from cmk.gui.graphing._legacy import AutomaticDict, graph_info, metric_info, UnitInfo
-from cmk.gui.logged_in import LoggedInUser
-from cmk.gui.metrics import _load_graphing_plugins
-from cmk.gui.utils.temperate_unit import TemperatureUnit
+from cmk.gui.graphing_main import _load_graphing_plugins
 
-from cmk.ccc.version import Edition, edition
 from cmk.discover_plugins import PluginLocation
 from cmk.graphing.v1 import graphs as graphs_api
 from cmk.graphing.v1 import metrics as metrics_api
@@ -32,18 +27,6 @@ def test_load_graphing_plugins() -> None:
     discovered_graphing_plugins = _load_graphing_plugins()
     assert not discovered_graphing_plugins.errors
     assert discovered_graphing_plugins.plugins
-
-
-def test_metric_duplicates() -> None:
-    assert not metric_info
-
-
-def test_perfometers() -> None:
-    assert not perfometer_info
-
-
-def test_graph_duplicates() -> None:
-    assert graph_info == AutomaticDict()
 
 
 def test_translations_to_be_standalone() -> None:
@@ -289,7 +272,7 @@ def _metric_names_by_module(
         | graphs_api.Graph
         | graphs_api.Bidirectional
         | translations_api.Translation,
-    ]
+    ],
 ) -> Mapping[str, _MetricNamesInModule]:
     metric_names_by_module: dict[str, _MetricNamesInModule] = {}
     for plugin_location, plugin in plugins.items():
@@ -347,88 +330,94 @@ _ALLOWED_BUNDLE_VIOLATIONS = (
 )
 
 
-@pytest.mark.parametrize(
-    "unit_info_, unit, expected_value",
-    [
-        pytest.param(
-            UnitInfo(
-                id="DecimalNotation_foo_AutoPrecision_2",
-                title="Title",
-                symbol="foo",
-                render=lambda v: f"{v} foo",
-                js_render="v => v",
-                conversion=lambda v: v,
-            ),
-            TemperatureUnit.CELSIUS,
-            "123.456 foo",
-            id="no-converter",
-        ),
-        pytest.param(
-            UnitInfo(
-                id="DecimalNotation_°C_AutoPrecision_2",
-                title="Title",
-                symbol="°C",
-                render=lambda v: f"{v} °C",
-                js_render="v => v",
-                conversion=lambda v: v,
-            ),
-            TemperatureUnit.CELSIUS,
-            "123.456 °C",
-            id="temp-celsius-celius",
-        ),
-        pytest.param(
-            UnitInfo(
-                id="DecimalNotation_°C_AutoPrecision_2",
-                title="Title",
-                symbol="°C",
-                render=lambda v: f"{v} °C",
-                js_render="v => v",
-                conversion=lambda v: v,
-            ),
-            TemperatureUnit.FAHRENHEIT,
-            "254.22 °F",
-            id="temp-celsius-fahrenheit",
-        ),
-        pytest.param(
-            UnitInfo(
-                id="DecimalNotation_°F_AutoPrecision_2",
-                title="Title",
-                symbol="°F",
-                render=lambda v: f"{v} °F",
-                js_render="v => v",
-                conversion=lambda v: v,
-            ),
-            TemperatureUnit.CELSIUS,
-            "50.81 °C",
-            id="temp-fahrenheit-celius",
-        ),
-        pytest.param(
-            UnitInfo(
-                id="DecimalNotation_°F_AutoPrecision_2",
-                title="Title",
-                symbol="°F",
-                render=lambda v: f"{v} °F",
-                js_render="v => v",
-                conversion=lambda v: v,
-            ),
-            TemperatureUnit.FAHRENHEIT,
-            "123.456 °F",
-            id="temp-fahrenheit-fahrenheit",
-        ),
-    ],
-)
-def test__compute_unit_info(
-    unit_info_: UnitInfo,
-    unit: TemperatureUnit,
-    expected_value: str,
-    request_context: None,
-) -> None:
-    active_config.default_temperature_unit = unit.value
-    unit_info_ = _compute_unit_info(
-        unit_info_.id,
-        unit_info_,
-        active_config,
-        LoggedInUser(None),
-        [_TemperatureUnitConverter],
+_ALLOWED_DUPLICATES = {
+    "Active": {"docker_active", "mem_lnx_active"},
+    "Active connections": {
+        "active",
+        "active_connections",
+        "aws_active_connections",
+        "fw_connections_active",
+    },
+    "Allocatable": {"kube_memory_allocatable", "kube_pod_allocatable", "kube_cpu_allocatable"},
+    "Allocated space": {"mem_lnx_vmalloc_used", "allocated_size"},
+    "Available capacity": {"emcvnx_avail_capacity", "capacity_perc"},
+    "Average consumption": {"aws_dynamodb_consumed_wcu", "aws_dynamodb_consumed_rcu"},
+    "Average usage": {"aws_dynamodb_consumed_rcu_perc", "aws_dynamodb_consumed_wcu_perc"},
+    "CPU utilization": {"util_numcpu_as_max", "util"},
+    "Cluster utilization": {
+        "kube_cpu_cluster_allocatable_utilization",
+        "kube_memory_cluster_allocatable_utilization",
+    },
+    "Connection time": {"aws_route53_connection_time", "connection_time"},
+    "Failed connections": {"connections_failed_rate", "failed_connections"},
+    "Fan speed": {"fan_perc", "fan", "fan_speed"},
+    "HTTP 500 errors": {"http_5xx", "aws_http_500_rate"},
+    "Harddrive uncorrectable errors": {
+        "harddrive_uncorrectable_erros",
+        "harddrive_uncorrectable_errors",
+    },
+    "Limits": {"kube_cpu_limit", "kube_memory_limit"},
+    "Limits utilization": {"kube_cpu_limit_utilization", "kube_memory_limit_utilization"},
+    "Maximum single-request consumption": {
+        "aws_dynamodb_maximum_consumed_wcu",
+        "aws_dynamodb_maximum_consumed_rcu",
+    },
+    "Memory used": {"memused_couchbase_bucket", "memory_used"},
+    "Minimum single-request consumption": {
+        "aws_dynamodb_minimum_consumed_rcu",
+        "aws_dynamodb_minimum_consumed_wcu",
+    },
+    "New connections": {"new_connections", "aws_new_connections"},
+    "Node utilization": {
+        "kube_cpu_node_allocatable_utilization",
+        "kube_memory_node_allocatable_utilization",
+    },
+    "Nodes": {"number_of_nodes", "aws_elasticache_nodes"},
+    "Non-compliant devices": {"mobileiron_non_compliant", "mobileiron_non_compliant_summary"},
+    "Power Usage": {"power_usage", "power_usage_percentage"},
+    "Pressure": {"pressure_pa", "pressure"},
+    "Queue length": {"queue", "queue_length"},
+    "Read latency": {"db_read_latency_s", "read_latency"},
+    "Read operations": {"disk_read_ios", "read_ops"},
+    "Requests": {"kube_memory_request", "kube_cpu_request", "aws_cloudfront_requests"},
+    "Requests per second": {"requests", "requests_per_sec", "requests_per_second"},
+    "Requests utilization": {"kube_memory_request_utilization", "kube_cpu_request_utilization"},
+    "Reserved space": {"reserved_size", "reserved"},
+    "Running containers": {"docker_running_containers", "kube_node_container_count_running"},
+    "Shared memory": {"mem_esx_shared", "mem_lnx_shmem"},
+    "Smoke": {"smoke_perc", "smoke_ppm"},
+    "Storage space used": {"storage_used", "storage_percent"},
+    "Streams": {"streams", "num_streams"},
+    "Swap used": {"swap_used", "swap_used_percent"},
+    "System": {"system", "system_size"},
+    "Total devices": {"ap_devices_total", "mobileiron_devices_total"},
+    "Total size": {"fs_size", "elasticsearch_size"},
+    "Total virtual memory": {"mem_lnx_total_total", "mem_total_virtual_in_bytes"},
+    "Usage": {"kube_cpu_usage", "pd_exclusivesnapshot", "kube_memory_usage"},
+    "Used licenses": {"licenses", "license_percentage"},
+    "Used virtual memory": {"pagefile_used_percent", "pagefile_used"},
+    "Used virtual memory (averaged)": {"pagefile_used_percent_avg", "pagefile_used_avg"},
+    "User": {"user", "num_user"},
+    "Utilization": {"cisco_sma_queue_utilization", "generic_util"},
+    "Write latency": {"write_latency", "db_write_latency_s"},
+    "Write operations": {"write_ops_s", "disk_write_ios"},
+}
+
+
+def test_duplicate_metric_titles() -> None:
+    metric_names_by_title: dict[str, set[str]] = {}
+    for plugin in _load_graphing_plugins().plugins.values():
+        if isinstance(plugin, metrics_api.Metric):
+            metric_names_by_title.setdefault(plugin.title.localize(str), set()).add(plugin.name)
+
+    duplicates = {t: mns for t, mns in metric_names_by_title.items() if len(mns) > 1}
+
+    new = {t: mns for t, mns in duplicates.items() if t not in _ALLOWED_DUPLICATES}
+    assert not new, "Found new duplicates:\n" + "\n".join(
+        [f"- {t}: {', '.join(mns)}" for t, mns in new.items()]
     )
-    assert unit_info_.render(unit_info_.conversion(123.456)) == expected_value
+
+    already_fixed = {t: mns for t, mns in _ALLOWED_DUPLICATES.items() if t not in duplicates}
+    assert not already_fixed, "Found already fixed duplicates:\n" + "\n".join(
+        [f"- {t}: {', '.join(mns)}" for t, mns in already_fixed.items()]
+    )

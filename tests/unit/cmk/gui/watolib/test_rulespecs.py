@@ -3,34 +3,27 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
-
 
 from collections.abc import Sequence
 
 import pytest
 from pytest import MonkeyPatch
 
+import cmk.ccc.version as cmk_version
+
 from cmk.utils import paths
-from cmk.utils.rulesets.definition import RuleGroup
 
 import cmk.gui.watolib.rulespecs
 from cmk.gui.exceptions import MKUserError
 from cmk.gui.plugins.wato.utils import TimeperiodValuespec
 from cmk.gui.utils.rule_specs.legacy_converter import GENERATED_GROUP_PREFIX
-from cmk.gui.valuespec import Dictionary, FixedValue, TextInput, Tuple, ValueSpec
-from cmk.gui.wato import register_check_parameters
+from cmk.gui.valuespec import Dictionary, FixedValue, TextInput
 from cmk.gui.watolib.main_menu import main_module_registry
 from cmk.gui.watolib.rulespecs import (
-    CheckTypeGroupSelection,
     get_rulegroup,
     HostRulespec,
     main_module_from_rulespec_group_name,
-    ManualCheckParameterRulespec,
     MatchItemGeneratorRules,
-    register_rule,
-    register_rulegroup,
-    Rulespec,
     rulespec_group_registry,
     rulespec_registry,
     RulespecGroup,
@@ -40,9 +33,6 @@ from cmk.gui.watolib.rulespecs import (
     RulespecSubGroup,
 )
 from cmk.gui.watolib.search import MatchItem
-
-import cmk.ccc.version as cmk_version
-from cmk.ccc.exceptions import MKGeneralException
 
 
 def test_rulespec_sub_group() -> None:
@@ -77,19 +67,6 @@ def test_rulespec_sub_group() -> None:
     assert test_sub_group.title == "Sub"
 
 
-def test_legacy_register_rulegroup(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        cmk.gui.watolib.rulespecs, "rulespec_group_registry", RulespecGroupRegistry()
-    )
-    register_rulegroup("abc", "A B C", "abc 123")
-
-    group = get_rulegroup("abc")
-    assert isinstance(group, RulespecGroup)
-    assert group.name == "abc"
-    assert group.title == "A B C"
-    assert group.help == "abc 123"
-
-
 def test_legacy_get_not_existing_rulegroup(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(
         cmk.gui.watolib.rulespecs, "rulespec_group_registry", RulespecGroupRegistry()
@@ -116,12 +93,12 @@ def test_legacy_get_not_existing_rule_sub_group(monkeypatch: MonkeyPatch) -> Non
 
 def _expected_rulespec_group_choices():
     expected = [
-        ("activechecks", "HTTP, TCP, Email, ..."),
+        ("activechecks", "HTTP, TCP, email, ..."),
         ("agent", "Access to agents"),
         ("agent/check_mk_agent", "&nbsp;&nbsp;\u2319 Checkmk agent"),
         ("agent/general_settings", "&nbsp;&nbsp;\u2319 General Settings"),
         ("agents", "Agent rules"),
-        ("agents/generic_options", "&nbsp;&nbsp;\u2319 Generic Options"),
+        ("agents/generic_options", "&nbsp;&nbsp;\u2319 Generic agent options"),
         ("checkparams", "Service discovery rules"),
         ("checkparams/discovery", "&nbsp;&nbsp;\u2319 Discovery of individual services"),
         (
@@ -140,7 +117,7 @@ def _expected_rulespec_group_choices():
         ("monconf/networking", "&nbsp;&nbsp;\u2319 Networking"),
         ("monconf/os", "&nbsp;&nbsp;\u2319 Operating System Resources"),
         ("monconf/printers", "&nbsp;&nbsp;\u2319 Printers"),
-        ("monconf/storage", "&nbsp;&nbsp;\u2319 Storage, Filesystems and Files"),
+        ("monconf/storage", "&nbsp;&nbsp;\u2319 Storage, file systems and files"),
         (
             "monconf/environment",
             "&nbsp;&nbsp;\u2319 Temperature, Humidity, Electrical Parameters, etc.",
@@ -165,7 +142,7 @@ def _expected_rulespec_group_choices():
         ("static/networking", "&nbsp;&nbsp;⌙ Networking"),
         ("static/os", "&nbsp;&nbsp;⌙ Operating System Resources"),
         ("static/printers", "&nbsp;&nbsp;⌙ Printers"),
-        ("static/storage", "&nbsp;&nbsp;⌙ Storage, Filesystems and Files"),
+        ("static/storage", "&nbsp;&nbsp;⌙ Storage, file systems and files"),
         ("static/virtualization", "&nbsp;&nbsp;⌙ Virtualization"),
         ("vm_cloud_container", "VM, cloud, container"),
     ]
@@ -174,8 +151,8 @@ def _expected_rulespec_group_choices():
         expected += [
             ("agents/agent_plugins", "&nbsp;&nbsp;\u2319 Agent plug-ins"),
             ("agents/automatic_updates", "&nbsp;&nbsp;\u2319 Automatic Updates"),
-            ("agents/linux_agent", "&nbsp;&nbsp;\u2319 Linux Agent"),
-            ("agents/windows_agent", "&nbsp;&nbsp;\u2319 Windows Agent"),
+            ("agents/linux_agent", "&nbsp;&nbsp;\u2319 Linux/UNIX agent options"),
+            ("agents/windows_agent", "&nbsp;&nbsp;\u2319 Windows agent options"),
             ("agents/windows_modules", "&nbsp;&nbsp;\u2319 Windows Modules"),
         ]
 
@@ -298,7 +275,6 @@ def test_rulespec_get_all_groups() -> None:
         "datasource_programs/custom",
         "datasource_programs/hw",
         "datasource_programs/os",
-        "datasource_programs/testing",
         "inventory",
         "eventconsole",
     ]
@@ -365,94 +341,6 @@ def test_rulespec_get_host_groups() -> None:
     assert sorted(group_names) == sorted(expected_rulespec_host_groups)
 
 
-def test_legacy_register_rule(monkeypatch: MonkeyPatch) -> None:
-    group_registry = RulespecGroupRegistry()
-    monkeypatch.setattr(cmk.gui.watolib.rulespecs, "rulespec_group_registry", group_registry)
-    monkeypatch.setattr(
-        cmk.gui.watolib.rulespecs, "rulespec_registry", RulespecRegistry(group_registry)
-    )
-
-    register_rule(
-        "grouping",
-        "dingdong_group",
-        Dictionary(
-            title="DING",
-            help="s-o-s",
-            elements=[],
-        ),
-    )
-
-    group = get_rulegroup("grouping")
-    assert group.name == "grouping"
-    assert group.title == "grouping"
-
-    rulespec_names = [
-        r.name for r in cmk.gui.watolib.rulespecs.rulespec_registry.get_by_group("grouping")
-    ]
-    assert "dingdong_group" in rulespec_names
-    assert len(rulespec_names) == 1
-
-    # Check some default values
-    spec = cmk.gui.watolib.rulespecs.rulespec_registry["dingdong_group"]
-
-    assert spec.name == "dingdong_group"
-    assert spec.group_name == "grouping"
-    assert isinstance(spec.valuespec, Dictionary)
-    assert spec.match_type == "first"
-    assert spec.title == "DING"
-    assert spec.help == "s-o-s"
-    assert spec.item_spec is None
-    assert spec.item_type is None
-    assert spec.item_name is None
-    assert spec.item_help is None
-    assert spec.item_enum is None
-    assert spec.is_optional is False
-    assert spec.is_deprecated is False
-    assert spec.factory_default == Rulespec.NO_FACTORY_DEFAULT
-
-
-def test_legacy_register_rule_attributes(monkeypatch: MonkeyPatch) -> None:
-    group_registry = RulespecGroupRegistry()
-    monkeypatch.setattr(cmk.gui.watolib.rulespecs, "rulespec_group_registry", group_registry)
-    monkeypatch.setattr(
-        cmk.gui.watolib.rulespecs, "rulespec_registry", RulespecRegistry(group_registry)
-    )
-
-    register_rule(
-        "dingdong_group",
-        "rule_name",
-        Dictionary(
-            title="DING",
-            elements=[],
-        ),
-        title="title",
-        help="help me!",
-        itemspec=TextInput(title="blub"),
-        itemtype="service",
-        itemname="Blub",
-        itemhelp="Item help",
-        match="dict",
-        optional=True,
-        deprecated=True,
-        factory_default="humpf",
-    )
-
-    spec = cmk.gui.watolib.rulespecs.rulespec_registry["rule_name"]
-    assert spec.name == "rule_name"
-    assert spec.group_name == "dingdong_group"
-    assert isinstance(spec.valuespec, Dictionary)
-    assert spec.match_type == "dict"
-    assert spec.title == "Deprecated: title"
-    assert spec.help == "help me!"
-    assert isinstance(spec.item_spec, TextInput)
-    assert spec.item_type == "service"
-    assert spec.item_name == "Blub"
-    assert spec.item_help == "Item help"
-    assert spec.is_optional is True
-    assert spec.is_deprecated is True
-    assert spec.factory_default == "humpf"
-
-
 @pytest.fixture(name="patch_rulespec_registries")
 def fixture_patch_rulespec_registries(monkeypatch: MonkeyPatch) -> None:
     group_registry = RulespecGroupRegistry()
@@ -461,149 +349,6 @@ def fixture_patch_rulespec_registries(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(cmk.gui.watolib.rulespecs, "rulespec_group_registry", group_registry)
     monkeypatch.setattr(cmk.gui.watolib.rulespecs, "rulespec_registry", test_rulespec_registry)
     monkeypatch.setattr(cmk.gui.plugins.wato.utils, "rulespec_registry", test_rulespec_registry)
-
-
-def test_register_check_parameters(patch_rulespec_registries: None) -> None:
-    register_check_parameters(
-        "netblabla",
-        "bla_params",
-        "Title of bla",
-        Dictionary(
-            elements=[],
-        ),
-        TextInput(title="The object name"),
-        "dict",
-    )
-
-    # Check either registration as discovery check ruleset
-    group = get_rulegroup("checkparams/netblabla")
-    assert group.name == "checkparams/netblabla"
-    assert group.title == "netblabla"
-
-    rulespec_names = [
-        r.name
-        for r in cmk.gui.watolib.rulespecs.rulespec_registry.get_by_group("checkparams/netblabla")
-    ]
-    assert RuleGroup.CheckgroupParameters("bla_params") in rulespec_names
-    assert len(rulespec_names) == 1
-    rulespec = cmk.gui.watolib.rulespecs.rulespec_registry[
-        RuleGroup.CheckgroupParameters("bla_params")
-    ]
-
-    assert rulespec.title == "Title of bla"
-    assert isinstance(rulespec.valuespec, TimeperiodValuespec)
-    assert rulespec.is_for_services is True
-    assert rulespec.item_type == "item"
-    assert rulespec.item_name == "The object name"
-    assert rulespec.item_help is None
-    assert isinstance(rulespec.item_spec, TextInput)
-    assert rulespec.match_type == "dict"
-    assert rulespec.is_deprecated is False
-    assert rulespec.is_optional is False
-
-    # and also as static ruleset
-    group = get_rulegroup("static/netblabla")
-    assert group.name == "static/netblabla"
-    assert group.title == "netblabla"
-
-    rulespec_names = [
-        r.name for r in cmk.gui.watolib.rulespecs.rulespec_registry.get_by_group("static/netblabla")
-    ]
-    assert RuleGroup.StaticChecks("bla_params") in rulespec_names
-    assert len(rulespec_names) == 1
-    rulespec = cmk.gui.watolib.rulespecs.rulespec_registry[RuleGroup.StaticChecks("bla_params")]
-    assert isinstance(rulespec, ManualCheckParameterRulespec)
-
-    # Static checks rulespecs are always
-    # a) host rulespecs
-    # b) match_type == "all"
-    assert rulespec.is_for_services is False
-    assert rulespec.match_type == "all"
-
-    assert rulespec.title == "Title of bla"
-    assert rulespec.item_type is None
-    assert rulespec.item_name is None
-    assert rulespec.item_help is None
-    # The item_spec of the ManualCheckParameterRulespec fetched differently,
-    # since it is no actual item spec
-    assert isinstance(rulespec._get_item_spec(), TextInput)
-    assert rulespec.is_deprecated is False
-    assert rulespec.is_optional is False
-
-    # Static checks wrap the valuespec into a 3-element tuple
-    # - check type selection
-    # - item spec for the service name
-    # - original valuespec (TimeperiodSelection)
-    assert isinstance(rulespec.valuespec, Tuple)
-    assert len(rulespec.valuespec._elements) == 3
-    assert isinstance(rulespec.valuespec._elements[0], CheckTypeGroupSelection)
-    assert isinstance(rulespec.valuespec._elements[1], ValueSpec)
-    assert isinstance(rulespec.valuespec._elements[2], TimeperiodValuespec)
-
-
-def test_register_host_check_parameters(patch_rulespec_registries: None) -> None:
-    register_check_parameters(
-        "netblabla",
-        "bla_params",
-        "Title of bla",
-        Dictionary(
-            elements=[],
-        ),
-        None,
-        "dict",
-    )
-
-    # Check either registration as discovery check ruleset
-    rulespec = cmk.gui.watolib.rulespecs.rulespec_registry[
-        RuleGroup.CheckgroupParameters("bla_params")
-    ]
-    assert rulespec.is_for_services is False
-
-    rulespec = cmk.gui.watolib.rulespecs.rulespec_registry[RuleGroup.StaticChecks("bla_params")]
-    assert rulespec.is_for_services is False
-    assert isinstance(rulespec.valuespec, Tuple)
-    assert len(rulespec.valuespec._elements) == 3
-    assert isinstance(rulespec.valuespec._elements[0], CheckTypeGroupSelection)
-    assert isinstance(rulespec.valuespec._elements[1], ValueSpec)
-    assert isinstance(rulespec.valuespec._elements[2], TimeperiodValuespec)
-
-
-def test_register_without_discovery(patch_rulespec_registries: None) -> None:
-    with pytest.raises(MKGeneralException, match="registering manual check"):
-        register_check_parameters(
-            "netblabla",
-            "bla_params",
-            "Title of bla",
-            Dictionary(
-                elements=[],
-            ),
-            None,
-            "dict",
-            has_inventory=False,
-        )
-
-
-def test_register_without_static(patch_rulespec_registries: None) -> None:
-    register_check_parameters(
-        "netblabla",
-        "bla_params",
-        "Title of bla",
-        Dictionary(
-            elements=[],
-        ),
-        None,
-        "dict",
-        has_inventory=True,
-        register_static_check=False,
-    )
-
-    # Check either registration as discovery check ruleset
-    rulespec = cmk.gui.watolib.rulespecs.rulespec_registry[
-        RuleGroup.CheckgroupParameters("bla_params")
-    ]
-    assert rulespec.is_for_services is False
-
-    assert RuleGroup.StaticChecks("bla_params") not in cmk.gui.watolib.rulespecs.rulespec_registry
 
 
 class DummyGroup(RulespecGroup):
@@ -661,16 +406,16 @@ def test_match_item_generator_rules() -> None:
         HostRulespec(
             name="some_host_rulespec",
             group=SomeRulespecGroup,
-            valuespec=lambda: TextInput(),  # pylint: disable=unnecessary-lambda
-            title=lambda: "Title",  # pylint: disable=unnecessary-lambda
+            valuespec=lambda: TextInput(),
+            title=lambda: "Title",
         )
     )
     rulespec_reg.register(
         HostRulespec(
             name="some_deprecated_host_rulespec",
             group=SomeRulespecGroup,
-            valuespec=lambda: TextInput(),  # pylint: disable=unnecessary-lambda
-            title=lambda: "Title",  # pylint: disable=unnecessary-lambda
+            valuespec=lambda: TextInput(),
+            title=lambda: "Title",
             is_deprecated=True,
         )
     )

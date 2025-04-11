@@ -36,7 +36,7 @@ def test_valuespec_to_marshmallow_all_global_settings(fake_user: LoggedInUser) -
     if fake_user.id:
         with gui_context(), UserContext(fake_user.id):
             for name, config_variable in config_variable_registry.items():
-                valuespec_to_marshmallow(config_variable().valuespec(), name=name)
+                valuespec_to_marshmallow(config_variable.valuespec(), name=name)
 
 
 @pytest.mark.usefixtures("request_context")
@@ -44,4 +44,4 @@ def test_generate_openapi_spec(fake_user: LoggedInUser) -> None:
     """Test that the openapi spec can be generated without errors."""
     if fake_user.id:
         with gui_context(), UserContext(fake_user.id):
-            spec_generate([])
+            spec_generate()

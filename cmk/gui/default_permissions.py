@@ -271,7 +271,7 @@ PermissionSeeFailedNotifications24H = Permission(
         "If Checkmk is unable to notify users about problems, the site will warn about this situation "
         "very visibly inside the UI (both in the tactical overview and the dashboard). This affects only "
         "users with this permission. Users with this permission will only see failed notifications "
-        "that occured within the last 24 hours."
+        "that occurred within the last 24 hours."
     ),
     defaults=["user"],
 )
@@ -316,8 +316,7 @@ PermissionParentChildTopology = Permission(
     name="parent_child_topology",
     title=_l("Network topology"),
     description=_l(
-        "This dashboard uses the parent relationships of your hosts to "
-        "display a hierarchical map."
+        "This dashboard uses the parent relationships of your hosts to display a hierarchical map."
     ),
     defaults=config.default_authorized_builtin_role_ids,
 )

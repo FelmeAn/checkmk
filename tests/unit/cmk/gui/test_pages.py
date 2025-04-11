@@ -7,16 +7,17 @@ import sys
 
 import pytest
 
+import cmk.ccc.version as cmk_version
+
 from cmk.utils import paths
 
 import cmk.gui.pages
-
-import cmk.ccc.version as cmk_version
 
 
 def test_registered_pages() -> None:
     expected_pages = [
         "add_bookmark",
+        "ajax_acknowledge_user_message",
         "ajax_figure_dashlet_data",
         "ajax_bi_rule_preview",
         "ajax_bi_aggregation_preview",
@@ -99,14 +100,12 @@ def test_registered_pages() -> None:
         "host_inv_api",
         "host_service_graph_popup",
         "index",
-        "info",
         "login",
         "logout",
         "logwatch",
         "mobile",
         "mobile_view",
         "noauth:automation",
-        "noauth:run_cron",
         "message",
         "prediction_graph",
         "parent_child_topology",
@@ -135,6 +134,7 @@ def test_registered_pages() -> None:
         "user_webauthn_register_begin",
         "user_totp_register",
         "user_two_factor_overview",
+        "user_two_factor_enforce",
         "user_two_factor_edit_credential",
         "user_webauthn_register_complete",
         "user_login_two_factor",
@@ -153,7 +153,7 @@ def test_registered_pages() -> None:
         "ajax_initial_dashboard_filters",
         "ajax_initial_view_filters",
         "ajax_initial_topology_filters",
-        "noauth:ajax_graph_images",
+        "ajax_graph_images",
         "gui_timings",
     ]
 
@@ -235,7 +235,9 @@ def test_registered_pages() -> None:
             "noauth:cognito_sso",
             "noauth:cognito_callback",
             "cognito_logout",
-            "noauth:verification_request",
+            "noauth:download_license_request",
+            "noauth:upload_license_response",
+            "noauth:download_license_usage",
         ]
 
     # TODO: Depending on how we call the test (single test or whole package) we

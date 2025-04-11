@@ -246,6 +246,7 @@ rulespec_registry.register(
         match_type="dict",
         parameter_valuespec=_parameter_valuespec_azure_storageaccounts,
         title=lambda: _("Azure Storage"),
+        is_deprecated=True,
     )
 )
 
@@ -291,6 +292,10 @@ def _parameter_valuespec_azure_databases():
                     ],
                 ),
             ),
+            (
+                "deadlocks_levels",
+                SimpleLevels(Float, title=_("Average deadlock count")),
+            ),
         ],
     )
 
@@ -303,6 +308,7 @@ rulespec_registry.register(
         match_type="dict",
         parameter_valuespec=_parameter_valuespec_azure_databases,
         title=lambda: _("Azure Databases"),
+        is_deprecated=True,
     )
 )
 
@@ -366,7 +372,7 @@ rulespec_registry.register(
         item_spec=_item_spec_azure_vms,
         match_type="dict",
         parameter_valuespec=_parameter_valuespec_azure_vms,
-        title=lambda: _("Azure Virtual Machines"),
+        title=lambda: _("Azure virtual machines"),
     )
 )
 
@@ -470,7 +476,7 @@ rulespec_registry.register(
         group=RulespecGroupCheckParametersApplications,
         match_type="dict",
         parameter_valuespec=_parameter_valuespec_azure_vms_summary,
-        title=lambda: _("Azure Virtual Machines Summary"),
+        title=lambda: _("Azure virtual machines summary"),
     )
 )
 

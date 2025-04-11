@@ -3,9 +3,11 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+from collections.abc import Callable
+
 from cmk.gui.data_source import DataSourceRegistry
 from cmk.gui.openapi.restful_objects.registry import EndpointRegistry
-from cmk.gui.painter.v0.base import PainterRegistry
+from cmk.gui.painter.v0 import PainterRegistry
 from cmk.gui.permissions import PermissionRegistry, PermissionSectionRegistry
 from cmk.gui.sidebar import SnapinRegistry
 from cmk.gui.valuespec import AutocompleterRegistry
@@ -13,16 +15,17 @@ from cmk.gui.views.command import CommandRegistry
 from cmk.gui.views.icon import IconRegistry
 from cmk.gui.views.sorter import SorterRegistry
 from cmk.gui.visuals.filter import FilterRegistry
-from cmk.gui.wato import NotificationParameterRegistry
 from cmk.gui.watolib.config_domain_name import (
     ConfigDomainRegistry,
     ConfigVariableGroupRegistry,
     ConfigVariableRegistry,
     SampleConfigGeneratorRegistry,
 )
+from cmk.gui.watolib.config_sync import ReplicationPathRegistry
 from cmk.gui.watolib.groups import ContactGroupUsageFinderRegistry
 from cmk.gui.watolib.main_menu import MainModuleRegistry
 from cmk.gui.watolib.mode import ModeRegistry
+from cmk.gui.watolib.notification_parameter import NotificationParameterRegistry
 from cmk.gui.watolib.rulespecs import RulespecGroupRegistry, RulespecRegistry
 from cmk.gui.watolib.search import match_item_generator_registry
 from cmk.gui.watolib.timeperiods import TimeperiodUsageFinderRegistry
@@ -36,7 +39,6 @@ from ._find_usage import (
 from ._openapi import register as openapi_register
 from ._sidebar_snapin import SidebarSnapinEventConsole
 from .autocompleters import service_levels_autocompleter, syslog_facilities_autocompleter
-from .config_domain import ConfigDomainEventConsole
 from .icon import MkeventdIcon
 from .permission_section import PermissionSectionEventConsole
 
@@ -66,6 +68,8 @@ def register(
     contact_group_usage_finder_registry: ContactGroupUsageFinderRegistry,
     timeperiod_usage_finder_registry: TimeperiodUsageFinderRegistry,
     endpoint_registry: EndpointRegistry,
+    replication_path_registry: ReplicationPathRegistry,
+    save_active_config: Callable[[], None],
 ) -> None:
     views.register(
         data_source_registry,
@@ -80,15 +84,17 @@ def register(
         sample_config_generator_registry,
         mode_registry,
         main_module_registry,
+        config_domain_registry,
+        save_active_config,
         config_variable_group_registry,
         config_variable_registry,
         rulespec_group_registry,
         rulespec_registry,
         match_item_generator_registry,
         notification_parameter_registry,
+        replication_path_registry,
     )
     permission_section_registry.register(PermissionSectionEventConsole)
-    config_domain_registry.register(ConfigDomainEventConsole)
     autocompleter_registry.register_autocompleter(
         "syslog_facilities", syslog_facilities_autocompleter
     )

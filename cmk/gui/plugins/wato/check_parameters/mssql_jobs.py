@@ -9,6 +9,7 @@ from cmk.gui.plugins.wato.check_parameters.db_jobs import (
     get_default_consider_job_status_choices,
     run_duration,
     status_disabled_jobs,
+    status_disabled_schedule,
     status_missing_jobs,
 )
 from cmk.gui.plugins.wato.utils import (
@@ -21,10 +22,11 @@ from cmk.gui.valuespec import Dictionary, Migrate, TextInput
 
 def _item_spec_mssql_jobs():
     return TextInput(
-        title=_("Job Name"),
+        title=_("Job ID"),
         help=_(
-            "You can set explicit jobs by defining their job names. The job names can be found "
-            'in the column "name" in the table "dbo.sysjobs" on the MSDB database.'
+            "You can set explicit jobs by defining their IDs. "
+            "The job ID is a combination of the job name and the name of the instance the job runs on: `{job_name} - {instance_name}`. "
+            'The job names can be found in the column "name" in the table "dbo.sysjobs" on the MSDB database.'
         ),
         allow_empty=False,
     )
@@ -36,12 +38,21 @@ def get_consider_job_status_choices() -> tuple[tuple[str, str], tuple[str, str],
     )
 
 
-# the migration is introduced in 2.2.0i1
-def migrate_ignore_db_status(v: dict[str, object]) -> dict[str, object]:
+def migrate_mssql_job_status(v: dict[str, object]) -> dict[str, object]:
+    _patch_ignore_status_optionally(v)
+    return _patch_schedule_status_optionally(v)
+
+
+def _patch_ignore_status_optionally(v: dict[str, object]) -> None:
     if (ignore_status := v.pop("ignore_db_status", None)) is not None:
         v["consider_job_status"] = "ignore" if ignore_status else "consider"
 
-    return v
+
+def _patch_schedule_status_optionally(v: dict[str, object]) -> dict[str, object]:
+    if "disabled_schedule_status" in v or "disabled_job_status" not in v:
+        return v
+    # in 2.4.0b1 end earlier disabled_job_status has been used as disabled_schedule_status
+    return v | {"disabled_schedule_status": v["disabled_job_status"]}
 
 
 def _parameter_valuespec_mssql_jobs() -> Migrate:
@@ -53,10 +64,11 @@ def _parameter_valuespec_mssql_jobs() -> Migrate:
                 ("run_duration", run_duration),
                 ("consider_job_status", get_consider_job_status_valuespec(choices)),
                 ("status_disabled_jobs", status_disabled_jobs),
+                ("status_disabled_schedule", status_disabled_schedule),
                 ("status_missing_jobs", status_missing_jobs),
             ],
         ),
-        migrate=migrate_ignore_db_status,
+        migrate=migrate_mssql_job_status,
     )
 
 

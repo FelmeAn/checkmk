@@ -86,8 +86,8 @@ class PredefinedConditionModeType(SimpleModeType[PredefinedConditionSpec]):
     def can_be_disabled(self) -> bool:
         return False
 
-    def affected_config_domains(self) -> list[type[ABCConfigDomain]]:
-        return [ConfigDomainCore]
+    def affected_config_domains(self) -> list[ABCConfigDomain]:
+        return [ConfigDomainCore()]
 
 
 class ModePredefinedConditions(SimpleListMode[PredefinedConditionSpec]):
@@ -128,9 +128,9 @@ class ModePredefinedConditions(SimpleListMode[PredefinedConditionSpec]):
         html.p(
             _(
                 "This module can be used to define conditions for Checkmk rules in a central place. "
-                "You can then refer to these conditions from different rulesets. Using these predefined "
+                "You can then refer to these conditions from different rule sets. Using these predefined "
                 "conditions may save you a lot of redundant conditions when you need them in multiple "
-                "rulesets."
+                "rule sets."
             )
         )
         super().page()

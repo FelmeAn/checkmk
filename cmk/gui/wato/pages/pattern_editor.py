@@ -5,15 +5,13 @@
 """Mode for trying out the logwatch patterns"""
 
 import re
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Sequence
+
+from livestatus import SiteId
 
 from cmk.utils.hostaddress import HostName
-from cmk.utils.labels import Labels
-from cmk.utils.servicename import Item, ServiceName
 
-# Tolerate this for 1.6. Should be cleaned up in future versions,
-# e.g. by trying to move the common code to a common place
-import cmk.base.export  # pylint: disable=cmk-module-layer-violation
+from cmk.checkengine.plugins import CheckPluginName
 
 from cmk.gui import forms
 from cmk.gui.breadcrumb import Breadcrumb
@@ -34,22 +32,32 @@ from cmk.gui.type_defs import PermissionName
 from cmk.gui.utils.html import HTML
 from cmk.gui.utils.urls import makeuri_contextless
 from cmk.gui.wato.pages.rulesets import ModeEditRuleset
-from cmk.gui.watolib.check_mk_automations import analyse_service
+from cmk.gui.watolib.check_mk_automations import (
+    analyse_service,
+    analyze_service_rule_matches,
+    get_service_name,
+)
 from cmk.gui.watolib.config_hostname import ConfigHostname
 from cmk.gui.watolib.hosts_and_folders import folder_from_request, folder_preserving_link
 from cmk.gui.watolib.mode import ModeRegistry, WatoMode
-from cmk.gui.watolib.rulesets import rules_grouped_by_folder, SingleRulesetRecursively
+from cmk.gui.watolib.rulesets import Rule, rules_grouped_by_folder, SingleRulesetRecursively
 from cmk.gui.watolib.search import (
     ABCMatchItemGenerator,
-    match_item_generator_registry,
     MatchItem,
+    MatchItemGeneratorRegistry,
     MatchItems,
 )
 from cmk.gui.watolib.utils import mk_repr
 
 
-def register(mode_registry: ModeRegistry) -> None:
+def register(
+    mode_registry: ModeRegistry,
+    match_item_generator_registry: MatchItemGeneratorRegistry,
+) -> None:
     mode_registry.register(ModePatternEditor)
+    match_item_generator_registry.register(
+        MatchItemGeneratorLogfilePatternAnalyzer("logfile_pattern_analyzer")
+    )
 
 
 class ModePatternEditor(WatoMode):
@@ -95,16 +103,16 @@ class ModePatternEditor(WatoMode):
 
     @staticmethod
     def title_pattern_analyzer():
-        return _("Logfile pattern analyzer")
+        return _("Log file pattern analyzer")
 
     def title(self) -> str:
         if not self._hostname and not self._item:
             return self.title_pattern_analyzer()
         if not self._hostname:
-            return _("Logfile patterns of logfile %s on all hosts") % (self._item)
+            return _("Log file patterns of log file %s on all hosts") % (self._item)
         if not self._item:
-            return _("Logfile patterns of Host %s") % (self._hostname)
-        return _("Logfile patterns of logfile %s on host %s") % (self._item, self._hostname)
+            return _("Log file patterns of host %s") % (self._hostname)
+        return _("Log file patterns of log file %s on host %s") % (self._item, self._hostname)
 
     def page_menu(self, breadcrumb: Breadcrumb) -> PageMenu:
         menu = PageMenu(
@@ -152,9 +160,9 @@ class ModePatternEditor(WatoMode):
     def page(self) -> None:
         html.help(
             _(
-                "On this page you can test the defined logfile patterns against a custom text, "
-                "for example a line from a logfile. Using this dialog it is possible to analyze "
-                "and debug your whole set of logfile patterns."
+                "On this page you can test the defined log file patterns against a custom text, "
+                "for example a line from a log file. Using this dialog it is possible to analyze "
+                "and debug your whole set of log file patterns."
             )
         )
 
@@ -166,7 +174,7 @@ class ModePatternEditor(WatoMode):
             forms.header(_("Try pattern match"))
             forms.section(_("Host name"))
             self._vs_host().render_input("host", self._hostname)
-            forms.section(_("Logfile"))
+            forms.section(_("Log file"))
             html.help(_("Here you need to insert the original file or pathname"))
             html.text_input("file", size=80)
             forms.section(_("Text to match"))
@@ -186,14 +194,14 @@ class ModePatternEditor(WatoMode):
     def _vs_host(self):
         return ConfigHostname()
 
-    def _show_patterns(self):  # pylint: disable=too-many-branches
+    def _show_patterns(self):
         from cmk.gui import logwatch
 
         ruleset = SingleRulesetRecursively.load_single_ruleset_recursively("logwatch_rules").get(
             "logwatch_rules"
         )
 
-        html.h3(_("Logfile patterns"))
+        html.h3(_("Log file patterns"))
         if ruleset.is_empty():
             html.open_div(class_="info")
             html.write_text_permissive(
@@ -211,19 +219,18 @@ class ModePatternEditor(WatoMode):
         # Loop all rules for this ruleset
         already_matched = False
         abs_rulenr = 0
-        service_labels: Labels = {}
         folder = folder_from_request(request.var("folder"), request.get_ascii_input("host"))
-        if self._hostname:
-            service_desc = self._get_service_description(self._hostname, "logwatch", self._item)
-            host = folder.host(self._hostname)
-            if not host:
-                raise MKUserError("host", _("The given host does not exist"))
-            service_labels = analyse_service(
-                host.site_id(),
-                self._hostname,
-                service_desc,
-            ).labels
-        for folder, folder_rules in rules_grouped_by_folder(ruleset.get_rules(), folder):
+
+        rules = ruleset.get_rules()
+        rule_match_results = (
+            self._analyze_rule_matches(
+                self._host.site_id(), self._hostname, self._item, [r[2] for r in rules]
+            )
+            if self._hostname and self._host
+            else {}
+        )
+
+        for folder, folder_rules in rules_grouped_by_folder(rules, folder):
             with table_element(
                 f"logfile_patterns_{folder.ident()}",
                 title="%s %s (%d)"
@@ -240,23 +247,8 @@ class ModePatternEditor(WatoMode):
                 omit_update_header=True,
             ) as table:
                 for _folder, rulenr, rule in folder_rules:
-                    # Check if this rule applies to the given host/service
-                    if self._hostname:
-                        service_desc = self._get_service_description(
-                            self._hostname, "logwatch", self._item
-                        )
-
-                        # If hostname (and maybe filename) try match it
-                        rule_matches = rule.matches_host_and_item(
-                            folder_from_request(request.var("folder"), self._hostname),
-                            self._hostname,
-                            self._item,
-                            service_desc,
-                            service_labels=service_labels,
-                        )
-                    else:
-                        # If no host/file given match all rules
-                        rule_matches = True
+                    # If no host/file given match all rules
+                    rule_matches = rule_match_results[rule.id] if rule_match_results else False
 
                     abs_rulenr += 1
 
@@ -290,7 +282,7 @@ class ModePatternEditor(WatoMode):
                                     match_class = "match first"
                                     match_img = "checkmark"
                                     match_title = _(
-                                        "This logfile pattern matches first and will be used for "
+                                        "This log file pattern matches first and will be used for "
                                         "defining the state of the given line."
                                     )
                                     already_matched = True
@@ -299,12 +291,12 @@ class ModePatternEditor(WatoMode):
                                     match_class = "match"
                                     match_img = "checkmark_orange"
                                     match_title = _(
-                                        "This logfile pattern matches but another matched first."
+                                        "This log file pattern matches but another matched first."
                                     )
                             else:
                                 match_img = "hyphen"
                                 match_title = _(
-                                    "This logfile pattern does not match the given string."
+                                    "This log file pattern does not match the given string."
                                 )
                         else:
                             # rule does not match
@@ -351,10 +343,26 @@ class ModePatternEditor(WatoMode):
                     )
                     html.icon_button(edit_url, _("Edit this rule"), "edit")
 
-    def _get_service_description(
-        self, hostname: HostName, check_plugin_name: str, item: Item
-    ) -> ServiceName:
-        return cmk.base.export.service_description(hostname, check_plugin_name, item)
+    def _analyze_rule_matches(
+        self, site_id: SiteId, host_name: HostName, item: str, rules: Sequence[Rule]
+    ) -> dict[str, bool]:
+        service_desc = get_service_name(host_name, CheckPluginName("logwatch"), item).service_name
+        service_labels = analyse_service(
+            site_id,
+            host_name,
+            service_desc,
+        ).labels
+
+        return {
+            rule_id: bool(matches)
+            for rule_id, matches in analyze_service_rule_matches(
+                host_name,
+                item,
+                service_labels,
+                [r.to_single_base_ruleset() for r in rules],
+            ).results.items()
+            for rule in rules
+        }
 
 
 class MatchItemGeneratorLogfilePatternAnalyzer(ABCMatchItemGenerator):
@@ -378,8 +386,3 @@ class MatchItemGeneratorLogfilePatternAnalyzer(ABCMatchItemGenerator):
     @property
     def is_localization_dependent(self) -> bool:
         return True
-
-
-match_item_generator_registry.register(
-    MatchItemGeneratorLogfilePatternAnalyzer("logfile_pattern_analyzer")
-)

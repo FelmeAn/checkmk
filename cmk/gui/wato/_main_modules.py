@@ -8,7 +8,9 @@
 # fields: mode, title, icon, permission, help
 
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+
+import cmk.ccc.version as cmk_version
 
 from cmk.utils import paths
 
@@ -18,8 +20,6 @@ from cmk.gui.i18n import _
 from cmk.gui.type_defs import Icon
 from cmk.gui.utils.urls import makeuri_contextless, makeuri_contextless_rulespec_group
 from cmk.gui.watolib.main_menu import ABCMainModule, MainModuleRegistry, MainModuleTopic
-
-import cmk.ccc.version as cmk_version
 
 from ._main_module_topics import (
     MainModuleTopicAgents,
@@ -55,10 +55,13 @@ def register(main_module_registry: MainModuleRegistry) -> None:
     main_module_registry.register(MainModuleUserCustomAttributes)
     main_module_registry.register(MainModuleContactGroups)
     main_module_registry.register(MainModuleNotifications)
+    main_module_registry.register(MainModuleAnalyzeNotifications)
+    main_module_registry.register(MainModuleTestNotifications)
     main_module_registry.register(MainModuleTimeperiods)
     main_module_registry.register(MainModulePasswords)
     main_module_registry.register(MainModuleAuditLog)
     main_module_registry.register(MainModuleAnalyzeConfig)
+    main_module_registry.register(MainModuleCertificateOverview)
     main_module_registry.register(MainModuleDiagnostics)
     main_module_registry.register(MainModuleMonitoringRules)
     main_module_registry.register(MainModuleDiscoveryRules)
@@ -170,7 +173,9 @@ class MainModuleGlobalSettings(ABCMainModule):
 
     @property
     def description(self) -> str:
-        return _("Global settings for Checkmk, Multisite and the monitoring core.")
+        return _(
+            "Global settings for Checkmk, graphical user interface (GUI) and the monitoring core."
+        )
 
     @property
     def sort_index(self) -> int:
@@ -238,7 +243,7 @@ class MainModuleRuleSearch(ABCMainModule):
 
     @property
     def description(self) -> str:
-        return _("Search all rules and rulesets")
+        return _("Search all rules and rule sets")
 
     @property
     def sort_index(self) -> int:
@@ -272,7 +277,7 @@ class MainModulePredefinedConditions(ABCMainModule):
 
     @property
     def description(self) -> str:
-        return _("Use predefined conditions to centralize the coniditions of your rulesets.")
+        return _("Use predefined conditions to centralize the conditions of your rule sets.")
 
     @property
     def sort_index(self) -> int:
@@ -340,7 +345,7 @@ class MainModuleHWSWInventory(ABCMainModule):
 
     @property
     def description(self) -> str:
-        return _("Manage Hard- and software inventory related rulesets")
+        return _("Manage hard- and software inventory related rule sets")
 
     @property
     def sort_index(self) -> int:
@@ -349,6 +354,10 @@ class MainModuleHWSWInventory(ABCMainModule):
     @property
     def is_show_more(self) -> bool:
         return True
+
+    @classmethod
+    def megamenu_search_terms(cls) -> Sequence[str]:
+        return ["hardware", "software"]
 
 
 class MainModuleNetworkingServices(ABCMainModule):
@@ -362,7 +371,7 @@ class MainModuleNetworkingServices(ABCMainModule):
 
     @property
     def title(self) -> str:
-        return _("HTTP, TCP, Email, ...")
+        return _("HTTP, TCP, email, ...")
 
     @property
     def icon(self) -> Icon:
@@ -765,6 +774,74 @@ class MainModuleNotifications(ABCMainModule):
         return False
 
 
+class MainModuleAnalyzeNotifications(ABCMainModule):
+    @property
+    def mode_or_url(self) -> str:
+        return "analyze_notifications"
+
+    @property
+    def topic(self) -> MainModuleTopic:
+        return MainModuleTopicEvents
+
+    @property
+    def title(self) -> str:
+        return _("Analyze recent notifications")
+
+    @property
+    def icon(self) -> Icon:
+        return "analyze"
+
+    @property
+    def permission(self) -> None | str:
+        return "notifications"
+
+    @property
+    def description(self) -> str:
+        return _("Analyze recent notifications with your current rule set")
+
+    @property
+    def sort_index(self) -> int:
+        return 11
+
+    @property
+    def is_show_more(self) -> bool:
+        return False
+
+
+class MainModuleTestNotifications(ABCMainModule):
+    @property
+    def mode_or_url(self) -> str:
+        return "test_notifications"
+
+    @property
+    def topic(self) -> MainModuleTopic:
+        return MainModuleTopicEvents
+
+    @property
+    def title(self) -> str:
+        return _("Test notifications")
+
+    @property
+    def icon(self) -> Icon:
+        return "analysis"
+
+    @property
+    def permission(self) -> None | str:
+        return "notifications"
+
+    @property
+    def description(self) -> str:
+        return _("Test custom notifications with your current rule set")
+
+    @property
+    def sort_index(self) -> int:
+        return 12
+
+    @property
+    def is_show_more(self) -> bool:
+        return False
+
+
 class MainModuleTimeperiods(ABCMainModule):
     @property
     def mode_or_url(self) -> str:
@@ -931,6 +1008,40 @@ class MainModuleAnalyzeConfig(ABCMainModule):
     @property
     def sort_index(self) -> int:
         return 40
+
+    @property
+    def is_show_more(self) -> bool:
+        return False
+
+
+class MainModuleCertificateOverview(ABCMainModule):
+    @property
+    def mode_or_url(self) -> str:
+        return "certificate_overview"
+
+    @property
+    def topic(self) -> MainModuleTopic:
+        return MainModuleTopicMaintenance
+
+    @property
+    def title(self) -> str:
+        return _("Certificate overview")
+
+    @property
+    def icon(self) -> Icon:
+        return "certificate_overview"
+
+    @property
+    def permission(self) -> None | str:
+        return "certificate_overview"
+
+    @property
+    def description(self) -> str:
+        return _("Displays details of the certificates used by Checkmk")
+
+    @property
+    def sort_index(self) -> int:
+        return 35
 
     @property
     def is_show_more(self) -> bool:
@@ -1250,7 +1361,7 @@ class MainModuleAgentAccessRules(ABCMainModule):
 
     @property
     def description(self) -> str:
-        return _("Configure agent access related settings using rulesets")
+        return _("Configure agent access related settings using rule sets")
 
     @property
     def sort_index(self) -> int:
@@ -1284,7 +1395,7 @@ class MainModuleSNMPRules(ABCMainModule):
 
     @property
     def description(self) -> str:
-        return _("Configure SNMP related settings using rulesets")
+        return _("Configure SNMP related settings using rule sets")
 
     @property
     def sort_index(self) -> int:

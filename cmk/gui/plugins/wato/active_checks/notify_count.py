@@ -23,14 +23,14 @@ def _valuespec_active_checks_notify_count():
                 "provided with Checkmk. This plug-in counts the total number of notifications sent by the local "
                 "monitoring core and creates graphs for each individual contact. You can configure thresholds "
                 "on the number of notifications per contact in a defined time interval. "
-                "This plug-in queries livestatus to extract the notification related log entries from the "
+                "This plug-in queries Livestatus to extract the notification related log entries from the "
                 "log file of your monitoring core."
             ),
             elements=[
                 (
                     "description",
                     TextInput(
-                        title=_("Service Description"),
+                        title=_("Service description"),
                         help=_("The name that will be used in the service name"),
                         allow_empty=False,
                     ),

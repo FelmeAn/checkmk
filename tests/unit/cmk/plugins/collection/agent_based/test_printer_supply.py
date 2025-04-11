@@ -3,7 +3,7 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
 import pytest
 
@@ -18,12 +18,20 @@ from cmk.agent_based.v2 import (
 )
 from cmk.plugins.collection.agent_based.printer_supply import (
     check_printer_supply,
-    DEFAULT_PARAMETERS,
+    CheckParams,
     discovery_printer_supply,
     parse_printer_supply,
     PrinterSupply,
     Section,
     SupplyClass,
+    Unit,
+)
+
+DEFAULT_PARAMETERS = CheckParams(
+    levels=(20.0, 10.0),
+    upturn_toner=False,
+    some_remaining_ink=State.WARN.value,
+    some_remaining_space=State.WARN.value,
 )
 
 
@@ -46,7 +54,7 @@ from cmk.plugins.collection.agent_based.printer_supply import (
             ],
             {
                 "Patrone Schwarz 508A HP CF360A": PrinterSupply(
-                    "%", 100, 9, SupplyClass.CONTAINER, "black"
+                    Unit("%"), 100, 9, SupplyClass.CONTAINER, "black"
                 ),
             },
             id="with null bytes",
@@ -135,7 +143,10 @@ def test_inventory_printer_supply(
                     ["Magenta Ink Cartridge", "15", "-2", "5", "3", "1"],
                 ],
             ],
-            [Result(state=State.OK, summary="Level: 5"), Metric("pages", 5)],
+            [
+                Result(state=State.OK, summary="Supply: 5 tenths of milliliters"),
+                Metric("supply_toner_magenta", 5),
+            ],
         ),
         (
             "Magenta Ink Cartridge",
@@ -148,10 +159,11 @@ def test_inventory_printer_supply(
             ],
             [
                 Result(
-                    state=State.CRIT, summary="Remaining: 5.00% (warn/crit below 20.00%/10.00%)"
+                    state=State.CRIT,
+                    summary="Supply level remaining: 5.00% (warn/crit below 20.00%/10.00%)",
                 ),
+                Metric("supply_toner_magenta", 5.0),
                 Result(state=State.OK, summary="Supply: 5 of max. 100 tenths of milliliters"),
-                Metric("pages", 5, levels=(20.0, 10.0), boundaries=(0, 100)),
             ],
         ),
         (
@@ -165,10 +177,11 @@ def test_inventory_printer_supply(
             ],
             [
                 Result(
-                    state=State.WARN, summary="Remaining: 15.00% (warn/crit below 20.00%/10.00%)"
+                    state=State.WARN,
+                    summary="Supply level remaining: 15.00% (warn/crit below 20.00%/10.00%)",
                 ),
+                Metric("supply_toner_magenta", 15.0),
                 Result(state=State.OK, summary="Supply: 15 of max. 100 tenths of milliliters"),
-                Metric("pages", 15, levels=(20.0, 10.0), boundaries=(0, 100)),
             ],
         ),
         (
@@ -181,9 +194,9 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 25.00%"),
+                Result(state=State.OK, summary="Supply level remaining: 25.00%"),
+                Metric("supply_toner_magenta", 25.0),
                 Result(state=State.OK, summary="Supply: 25 of max. 100 tenths of milliliters"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
             ],
         ),
         (
@@ -196,9 +209,9 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 25.00%"),
+                Result(state=State.OK, summary="Supply level remaining: 25.00%"),
+                Metric("supply_toner_magenta", 25.0),
                 Result(state=State.OK, summary="Supply: 25 of max. 100 micrometers"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
             ],
         ),
         (
@@ -211,9 +224,8 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 25.00%"),
-                Result(state=State.OK, summary="Supply: 25 of max. 100"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
+                Result(state=State.OK, summary="Supply level remaining: 25.00%"),
+                Metric("supply_toner_magenta", 25.0),
             ],
         ),
         (
@@ -226,9 +238,8 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 25.00%"),
-                Result(state=State.OK, summary="Supply: 25 of max. 100%"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
+                Result(state=State.OK, summary="Supply level remaining: 25.00%"),
+                Metric("supply_toner_magenta", 25.0),
             ],
         ),
         (
@@ -263,9 +274,8 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 25.00%"),
-                Result(state=State.OK, summary="Supply: 25 of max. 100%"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
+                Result(state=State.OK, summary="Supply level remaining: 25.00%"),
+                Metric("supply_toner_magenta", 25.0),
             ],
         ),
         (
@@ -279,9 +289,8 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 25.00%"),
-                Result(state=State.OK, summary="Supply: 25 of max. 100%"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
+                Result(state=State.OK, summary="Supply level remaining: 25.00%"),
+                Metric("supply_toner_other", 25.0),
             ],
         ),
         (
@@ -295,9 +304,8 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 25.00%"),
-                Result(state=State.OK, summary="Supply: 25 of max. 100%"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
+                Result(state=State.OK, summary="Supply level remaining: 25.00%"),
+                Metric("supply_toner_magenta", 25.0),
             ],
         ),
         (
@@ -310,9 +318,8 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 75.00%"),
-                Result(state=State.OK, summary="Supply: 25 of max. 100%"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
+                Result(state=State.OK, summary="Supply level remaining: 75.00%"),
+                Metric("supply_toner_magenta", 75.0),
             ],
         ),
         (
@@ -325,9 +332,8 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="Remaining: 75.00%"),
-                Result(state=State.OK, summary="Supply: 25 of max. 100%"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
+                Result(state=State.OK, summary="Supply level remaining: 75.00%"),
+                Metric("supply_toner_magenta", 75.0),
             ],
         ),
         (
@@ -340,19 +346,54 @@ def test_inventory_printer_supply(
                 ],
             ],
             [
-                Result(state=State.OK, summary="[magenta] Remaining: 75.00%"),
-                Result(state=State.OK, summary="Supply: 25 of max. 100%"),
-                Metric("pages", 25, levels=(20.0, 10.0), boundaries=(0, 100)),
+                Result(state=State.OK, summary="Supply level remaining: 75.00%"),
+                Metric("supply_toner_magenta", 75.0),
             ],
         ),
     ],
 )
 def test_check_printer_supply(
     item: str,
-    params: Mapping[str, object],
+    params: CheckParams,
     info: Sequence[StringTable],
     expected_result: CheckResult,
 ) -> None:
     section = parse_printer_supply(info)
     result = check_printer_supply(item, params, section)
     assert list(result) == expected_result
+
+
+def _get_section_with_color_in_description(item: str) -> Section:
+    max_capacity, supply_level, container_class = "0", "25", str(SupplyClass.CONTAINER)
+    info = [[["1.1", ""]], [[item, "", max_capacity, supply_level, container_class, ""]]]
+    return parse_printer_supply(info)
+
+
+@pytest.mark.parametrize("item", ["Black", "Schwarz", "Noir", "Negra"])
+def test_check_printer_supply_black_translations(item: str) -> None:
+    section = _get_section_with_color_in_description(item)
+
+    _, value = list(check_printer_supply(item, DEFAULT_PARAMETERS, section))
+    expected = Metric("supply_toner_black", 25.0)
+
+    assert value == expected
+
+
+@pytest.mark.parametrize("item", ["Cyan", "Zyan", "Cian"])
+def test_check_printer_supply_cyan_translations(item: str) -> None:
+    section = _get_section_with_color_in_description(item)
+
+    _, value = list(check_printer_supply(item, DEFAULT_PARAMETERS, section))
+    expected = Metric("supply_toner_cyan", 25.0)
+
+    assert value == expected
+
+
+@pytest.mark.parametrize("item", ["Yellow", "Gelb", "Jaune", "Amarilla"])
+def test_check_printer_supply_yellow_translations(item: str) -> None:
+    section = _get_section_with_color_in_description(item)
+
+    _, value = list(check_printer_supply(item, DEFAULT_PARAMETERS, section))
+    expected = Metric("supply_toner_yellow", 25.0)
+
+    assert value == expected

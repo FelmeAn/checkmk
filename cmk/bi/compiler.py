@@ -14,6 +14,10 @@ from typing import TypedDict
 
 from redis import Redis
 
+from cmk.ccc import store
+from cmk.ccc.exceptions import MKGeneralException
+from cmk.ccc.i18n import _
+
 from cmk.utils.log import logger
 from cmk.utils.paths import default_config_dir
 from cmk.utils.redis import get_redis_client
@@ -25,9 +29,6 @@ from cmk.bi.packs import BIAggregationPacks
 from cmk.bi.searcher import BISearcher
 from cmk.bi.trees import BICompiledAggregation, BICompiledRule, FrozenBIInfo
 from cmk.bi.type_defs import frozen_aggregations_dir
-from cmk.ccc import store
-from cmk.ccc.exceptions import MKGeneralException
-from cmk.ccc.i18n import _
 
 
 class ConfigStatus(TypedDict):
@@ -44,7 +45,7 @@ class BICompiler:
         self._sites_callback = sites_callback
         self._bi_configuration_file = bi_configuration_file
 
-        self._logger = logger.getChild("bi.compiler")
+        self._logger = logger.getChild("web.bi.compilation")
         self._compiled_aggregations: dict[str, BICompiledAggregation] = {}
         self._path_compilation_lock = Path(get_cache_dir(), "compilation.LOCK")
         self._path_compilation_timestamp = Path(get_cache_dir(), "last_compilation")
@@ -219,22 +220,20 @@ class BICompiler:
 
             self.prepare_for_compilation(current_configstatus["online_sites"])
 
-            # Compile the raw tree
-            all_aggregations_by_id: dict[str, BIAggregation] = {
-                x.id: x for x in self._bi_packs.get_all_aggregations()
-            }
-            for aggregation in all_aggregations_by_id.values():
-                start = time.time()
+            for aggregation in self._bi_packs.get_all_aggregations():
+                start = time.perf_counter()
                 self._compiled_aggregations[aggregation.id] = aggregation.compile(self.bi_searcher)
-                self._logger.debug(f"Compilation of {aggregation.id} took {time.time() - start:f}")
+                end = time.perf_counter()
+                self._logger.debug(f"Compilation of {aggregation.id} took {end - start:f}")
             self._verify_aggregation_title_uniqueness(self._compiled_aggregations)
 
             for aggr_id, compiled_aggr in self._compiled_aggregations.items():
-                start = time.time()
+                start = time.perf_counter()
                 result = compiled_aggr.serialize()
+                end = time.perf_counter()
                 self._logger.debug(
                     "Schema dump %s took config took %f (%d branches)"
-                    % (aggr_id, time.time() - start, len(compiled_aggr.branches))
+                    % (aggr_id, end - start, len(compiled_aggr.branches))
                 )
                 self._save_data(path_compiled_aggregations.joinpath(aggr_id), result)
 

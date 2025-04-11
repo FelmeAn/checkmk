@@ -3,20 +3,22 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+from collections.abc import Callable
+
 import pytest
 
 from cmk.utils.sectionname import SectionName
 
-from cmk.checkengine.checking import CheckPluginName
-
-from cmk.base.api.agent_based.plugin_classes import (
+from cmk.checkengine.plugins import (
     CheckFunction,
-    DiscoveryFunction,
+    CheckPluginName,
     SNMPParseFunction,
 )
 
-from cmk.agent_based.v2 import Metric, Result, Service, State
+from cmk.agent_based.v2 import DiscoveryResult, Metric, Result, Service, State
 from cmk.plugins.lib.df import FILESYSTEM_DEFAULT_PARAMS
+
+type DiscoveryFunction = Callable[..., DiscoveryResult]
 
 parsed = {"Archiv_Test": [("Archiv_Test", 953674.31640625, 944137.5732421875, 0)]}
 check_name = "fast_lta_volumes"
@@ -24,14 +26,14 @@ check_name = "fast_lta_volumes"
 
 # TODO: drop this after migration
 @pytest.fixture(scope="module", name="plugin")
-def _get_plugin(fix_register):
-    return fix_register.check_plugins[CheckPluginName(check_name)]
+def _get_plugin(agent_based_plugins):
+    return agent_based_plugins.check_plugins[CheckPluginName(check_name)]
 
 
 # TODO: drop this after migration
 @pytest.fixture(scope="module", name=f"parse_{check_name}")
-def _get_parse(fix_register):
-    return fix_register.snmp_sections[SectionName(check_name)].parse_function
+def _get_parse(agent_based_plugins):
+    return agent_based_plugins.snmp_sections[SectionName(check_name)].parse_function
 
 
 # TODO: drop this after migration

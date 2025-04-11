@@ -7,9 +7,11 @@ from collections.abc import Iterable
 
 from pytest import MonkeyPatch
 
-from cmk.gui.valuespec import TextInput, ValueSpec
-from cmk.gui.wato.pages.global_settings import MatchItemGeneratorSettings, ModeEditGlobals
+from cmk.gui.i18n import _l
+from cmk.gui.valuespec import TextInput
+from cmk.gui.wato.pages.global_settings import DefaultModeEditGlobals, MatchItemGeneratorSettings
 from cmk.gui.watolib.config_domain_name import ABCConfigDomain, ConfigVariable, ConfigVariableGroup
+from cmk.gui.watolib.config_domains import ConfigDomainCore
 from cmk.gui.watolib.search import MatchItem
 
 
@@ -17,24 +19,26 @@ def test_match_item_generator_settings(
     monkeypatch: MonkeyPatch,
     request_context: None,
 ) -> None:
-    class SomeConfigVariable(ConfigVariable):
-        def group(self) -> type[ConfigVariableGroup]:
-            raise NotImplementedError()  # Hmmm...
+    group = ConfigVariableGroup(
+        title=_l("xyz"),
+        sort_index=10,
+    )
 
-        def ident(self) -> str:
-            return "ident"
+    config_variable = ConfigVariable(
+        group=group,
+        domain=ConfigDomainCore,
+        ident="ident",
+        valuespec=lambda: TextInput(title="title"),
+    )
 
-        def valuespec(self) -> ValueSpec:
-            return TextInput(title="title")
-
-    class SomeSettingsMode(ModeEditGlobals):
+    class SomeSettingsMode(DefaultModeEditGlobals):
         def iter_all_configuration_variables(
             self,
         ) -> Iterable[tuple[ConfigVariableGroup, Iterable[ConfigVariable]]]:
             return [
                 (
-                    ConfigVariableGroup(),
-                    [SomeConfigVariable()],
+                    group,
+                    [config_variable],
                 )
             ]
 

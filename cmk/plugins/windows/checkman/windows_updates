@@ -1,0 +1,17 @@
+title: Windows: Updates
+agents: windows
+catalog: os/misc
+license: GPLv2
+distribution: check_mk
+description:
+ The check uses WMI to fetch the number of pending important and optional updates
+ on a windows system. It also checks if a reboot is needed after installing updates.
+
+ By default the check only fetches the information and never raises WARNING/CRITICAL
+ states. But this can be configured.
+
+ The windows agent needs to be extended with the {windows_updates.ps1} provided
+ in {agents/windows/plugins}.
+
+discovery:
+ One service named {System Updates} is created for each host.

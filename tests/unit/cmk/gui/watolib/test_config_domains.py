@@ -3,7 +3,6 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-# pylint: disable=protected-access
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,13 +13,13 @@ from pytest_mock import MockerFixture
 
 from livestatus import SiteId
 
-import omdlib.main  # pylint: disable=wrong-import-order
-from omdlib.contexts import SiteContext  # pylint: disable=wrong-import-order
+import omdlib.main
+from omdlib.contexts import SiteContext
+
+from cmk.ccc.store import load_text_from_file
 
 from cmk.gui.watolib import config_domains
 from cmk.gui.watolib.config_domains import ConfigDomainCACertificates
-
-from cmk.ccc.store import load_text_from_file
 
 remote1_newer = (
     "-----BEGIN CERTIFICATE-----\n"
@@ -238,10 +237,10 @@ class TestConfigDomainCACertificates:
         )
         assert list(remote_cas) == [SiteId("heute_remote_1"), SiteId("heute_remote_2")]
 
-        assert remote_cas[SiteId("heute_remote_1")].not_valid_after_utc == longest_validity
+        assert remote_cas[SiteId("heute_remote_1")].not_valid_after == longest_validity
         # also test changed order:
         remote_cas = ConfigDomainCACertificates()._remote_sites_cas([remote1_older, remote1_newer])
-        assert remote_cas[SiteId("heute_remote_1")].not_valid_after_utc == longest_validity
+        assert remote_cas[SiteId("heute_remote_1")].not_valid_after == longest_validity
 
     def test_remote_root_ca_in_remote_site_cas(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -259,7 +258,7 @@ class TestConfigDomainCACertificates:
         )
 
         assert not site_pem.exists()
-        omdlib.main.initialize_site_ca(SiteContext(site_id), site_key_size=1024)
+        omdlib.main.initialize_site_ca(SiteContext(site_id), site_key_size=1024, root_key_size=1024)
 
         remote_cas = ConfigDomainCACertificates()._remote_sites_cas([ca_pem.read_text()])
         assert SiteId(site_id) in remote_cas

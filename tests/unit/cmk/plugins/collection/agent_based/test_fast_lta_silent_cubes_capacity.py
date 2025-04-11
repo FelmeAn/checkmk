@@ -3,14 +3,16 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
+from collections.abc import Callable
+
 import pytest
 
-from cmk.checkengine.checking import CheckPluginName
+from cmk.checkengine.plugins import CheckFunction, CheckPluginName
 
-from cmk.base.api.agent_based.plugin_classes import CheckFunction, DiscoveryFunction
-
-from cmk.agent_based.v2 import Metric, Result, Service, State
+from cmk.agent_based.v2 import DiscoveryResult, Metric, Result, Service, State
 from cmk.plugins.lib.df import FILESYSTEM_DEFAULT_PARAMS
+
+type DiscoveryFunction = Callable[..., DiscoveryResult]
 
 info = [["8001591181312", "3875508482048"]]
 check_name = "fast_lta_silent_cubes_capacity"
@@ -18,8 +20,8 @@ check_name = "fast_lta_silent_cubes_capacity"
 
 # TODO: drop this after migration
 @pytest.fixture(scope="module", name="plugin")
-def _get_plugin(fix_register):
-    return fix_register.check_plugins[CheckPluginName(check_name)]
+def _get_plugin(agent_based_plugins):
+    return agent_based_plugins.check_plugins[CheckPluginName(check_name)]
 
 
 # TODO: drop this after migration

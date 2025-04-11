@@ -16,8 +16,8 @@ from cmk.agent_based.v2 import (
     Service,
     StringTable,
 )
-from cmk.plugins.lib.netapp_api import check_netapp_vs_traffic
 from cmk.plugins.netapp import models
+from cmk.plugins.netapp.agent_based.lib import check_netapp_vs_traffic
 
 # <<<netapp_ontap_vs_traffic:sep(0)>>>
 # {
@@ -50,7 +50,7 @@ def parse_netapp_ontap_vs_traffic(string_table: StringTable) -> Section:
     return {
         f"{counters.table}.{counters.svm_name}": counters
         for line in string_table
-        if (counters := models.SvmTrafficCountersModel.model_validate_json(line[0]))
+        for counters in [models.SvmTrafficCountersModel.model_validate_json(line[0])]
     }
 
 

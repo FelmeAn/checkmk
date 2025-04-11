@@ -3,12 +3,13 @@
 # This file is part of Checkmk (https://checkmk.com). It is subject to the terms and
 # conditions defined in the file COPYING, which is part of this source code package.
 
-from typing import Any
+from typing import Any, MutableMapping
 
-from marshmallow import post_load, ValidationError
+from marshmallow import INCLUDE, post_load, ValidationError
 from marshmallow_oneofschema import OneOfSchema
 
 from cmk.gui.fields import LDAPConnectionID, Timestamp
+from cmk.gui.fields.custom_fields import LDAPConnectionSuffix
 from cmk.gui.fields.utils import BaseSchema
 from cmk.gui.userdb import get_ldap_connections, UserRolesConfigFile
 from cmk.gui.watolib.custom_attributes import load_custom_attrs_from_mk_file
@@ -250,7 +251,22 @@ class LDAPResponseTimeoutSelectorRequest(LDAPCheckboxSelector):
     }
 
 
-class LDAPConnectionSuffixRequest(LDAPCheckboxEnabledRequest):
+class LDAPConnectionSuffixCreateRequest(LDAPCheckboxEnabledRequest):
+    suffix = LDAPConnectionSuffix(
+        presence="should_not_exist",
+        example="suffix_example",
+        required=True,
+    )
+
+
+class LDAPConnectionSuffixCreateSelectorRequest(LDAPCheckboxSelector):
+    type_schemas = {
+        "enabled": LDAPConnectionSuffixCreateRequest,
+        "disabled": LDAPCheckboxDisabledRequest,
+    }
+
+
+class LDAPConnectionSuffixUpdateRequest(LDAPCheckboxEnabledRequest):
     suffix = fields.String(
         description="The LDAP connection suffix can be used to distinguish equal named objects"
         " (name conflicts), for example user accounts, from different LDAP connections.",
@@ -259,9 +275,9 @@ class LDAPConnectionSuffixRequest(LDAPCheckboxEnabledRequest):
     )
 
 
-class LDAPConnectionSuffixSelectorRequest(LDAPCheckboxSelector):
+class LDAPConnectionSuffixUpdateSelectorRequest(LDAPCheckboxSelector):
     type_schemas = {
-        "enabled": LDAPConnectionSuffixRequest,
+        "enabled": LDAPConnectionSuffixUpdateRequest,
         "disabled": LDAPCheckboxDisabledRequest,
     }
 
@@ -329,8 +345,20 @@ class LDAPConnectionRequest(BaseSchema):
         example={"state": "enabled", "seconds": 5},
         load_default={"state": "disabled"},
     )
+
+
+class LDAPConnectionCreateRequest(LDAPConnectionRequest):
     connection_suffix = fields.Nested(
-        LDAPConnectionSuffixSelectorRequest,
+        LDAPConnectionSuffixCreateSelectorRequest,
+        description="If the connection suffix is enabled and what its set to.",
+        example={"state": "enabled", "suffix": "suffix_example"},
+        load_default={"state": "disabled"},
+    )
+
+
+class LDAPConnectionUpdateRequest(LDAPConnectionRequest):
+    connection_suffix = fields.Nested(
+        LDAPConnectionSuffixUpdateSelectorRequest,
         description="If the connection suffix is enabled and what its set to.",
         example={"state": "enabled", "suffix": "suffix_example"},
         load_default={"state": "disabled"},
@@ -663,7 +691,21 @@ class LDAPRoleElementRequest(BaseSchema):
         return data
 
 
-class LDAPGroupsToRolesRequest(LDAPCheckboxEnabledRequest):
+class LDAPEnableGroupsToRoles(BaseSchema):
+    handle_nested = fields.Boolean(
+        required=False,
+        description="Once you enable this option, this plug-in will not only handle direct group "
+        "memberships, instead it will also dig into nested groups and treat the members of those "
+        "groups as contact group members as well. Please bear in mind that this feature might "
+        "increase the execution time of your LDAP sync",
+        load_default=False,
+    )
+    state = fields.Constant(
+        "enabled",
+        required=True,
+        example="enabled",
+        description="This config parameter is enabled.",
+    )
     admin = fields.Nested(
         LDAPRoleElementRequest,
         many=True,
@@ -685,20 +727,40 @@ class LDAPGroupsToRolesRequest(LDAPCheckboxEnabledRequest):
         required=False,
     )
 
+    @post_load(pass_original=True)
+    def _validate_extra_attributes(
+        self,
+        result_data: dict[str, Any],
+        original_data: MutableMapping[str, Any],
+        **_unused_args: Any,
+    ) -> dict[str, Any]:
+        for field in self.fields:
+            original_data.pop(field, None)
 
-def ldap_group_to_roles_request_schema() -> type[LDAPGroupsToRolesRequest]:
-    return LDAPGroupsToRolesRequest.from_dict(
-        {
-            name: fields.Nested(LDAPRoleElementRequest, many=True, required=False)
-            for name in UserRolesConfigFile().load_for_reading()
-        },
-        name="LDAPGroupsToRolesRequestWithCustomRoles",
-    )
+        if not original_data:
+            return result_data
+
+        roles = UserRolesConfigFile().load_for_reading()
+        test_field = fields.Nested(LDAPRoleElementRequest, many=True, required=False)
+
+        for name, value in original_data.items():
+            if name not in roles:
+                raise ValidationError(f"Unknown user role: {name!r}")
+
+            try:
+                test_field.deserialize(value)
+
+            except ValidationError as e:
+                raise ValidationError(f"Invalid value for {name!r}: {e.messages}")
+
+            result_data[name] = value
+
+        return result_data
 
 
 class LDAPGroupsToRolesSelector(LDAPCheckboxSelector):
     type_schemas = {
-        "enabled": ldap_group_to_roles_request_schema(),
+        "enabled": LDAPEnableGroupsToRoles,
         "disabled": LDAPCheckboxDisabledRequest,
     }
 
@@ -802,10 +864,41 @@ class LDAPSyncPluginsRequest(BaseSchema):
     )
     groups_to_roles = fields.Nested(
         LDAPGroupsToRolesSelector,
+        unknown=INCLUDE,
         description="Configures the roles of the user depending on its group memberships in LDAP. "
         "Please note: Additionally the user is assigned to the Default Roles. Deactivate them if unwanted.",
         load_default={"state": "disabled"},
     )
+
+    @post_load(pass_original=True)
+    def _validate_extra_attributes(
+        self,
+        result_data: dict[str, Any],
+        original_data: MutableMapping[str, Any],
+        **_unused_args: Any,
+    ) -> dict[str, Any]:
+        for field in self.fields:
+            original_data.pop(field, None)
+
+        if not original_data:
+            return result_data
+
+        custom_user_attributes = load_custom_attrs_from_mk_file(lock=False)["user"]
+        test_field = fields.Nested(LDAPSyncPluginCustomSelector, required=False)
+
+        for name, value in original_data.items():
+            if name not in {attr["title"] for attr in custom_user_attributes}:
+                raise ValidationError(f"Unknown custom user attribute: {name!r}")
+
+            try:
+                test_field.deserialize(value)
+
+            except ValidationError as e:
+                raise ValidationError(f"Invalid value for {name!r}: {e.messages}")
+
+            result_data[name] = value
+
+        return result_data
 
 
 class LDAPSyncPluginCustomRequest(LDAPCheckboxEnabledRequest):
@@ -821,17 +914,6 @@ class LDAPSyncPluginCustomSelector(LDAPCheckboxSelector):
         "enabled": LDAPSyncPluginCustomRequest,
         "disabled": LDAPCheckboxDisabledRequest,
     }
-
-
-def ldap_sync_plugins_request_schema() -> type[LDAPSyncPluginsRequest]:
-    custom_user_attributes = load_custom_attrs_from_mk_file(lock=False)["user"]
-    return LDAPSyncPluginsRequest.from_dict(
-        {
-            attr["title"]: fields.Nested(LDAPSyncPluginCustomSelector)
-            for attr in custom_user_attributes
-        },
-        name="LDAPSyncPluginsRequestWithCustomAttributes",
-    )
 
 
 class LDAPSyncIntervalRequest(BaseSchema):
@@ -856,36 +938,12 @@ class LDAPOtherRequest(BaseSchema):
     sync_interval = fields.Nested(
         LDAPSyncIntervalRequest,
         description="This option defines the interval of the LDAP synchronization. This setting is only"
-        " used by sites which have the Automatic User Synchronization enabled.",
+        " used by sites which have the automatic user synchronization enabled.",
         load_default={"days": 0, "hours": 0, "minutes": 5},
     )
 
 
 class LDAPConnectionConfigRequest(BaseSchema):
-    ldap_connection = fields.Nested(
-        LDAPConnectionRequest,
-        required=True,
-        description="The LDAP connection configuration",
-        example={
-            "directory_type": {
-                "type": "active_directory_manual",
-                "ldap_server": "123.31.12.34",
-            },
-            "bind_credentials": {
-                "state": "enabled",
-                "type": "explicit",
-                "bind_dn": "cn=commonname,ou=OrgUnit,dc=domaincomp,dc=de",
-                "explicit_password": "yourpass",
-            },
-            "tcp_port": {"state": "enabled", "port": 389},
-            "ssl_encryption": "enable_ssl",
-            "connect_timeout": {"state": "enabled", "seconds": 5.0},
-            "ldap_version": {"state": "enabled", "version": 3},
-            "page_size": {"state": "enabled", "size": 1000},
-            "response_timeout": {"state": "enabled", "seconds": 60},
-            "connection_suffix": {"state": "enabled", "suffix": "dc=domaincomp,dc=de"},
-        },
-    )
     users = fields.Nested(
         LDAPUsersRequest,
         description="The LDAP user configuration",
@@ -930,7 +988,8 @@ class LDAPConnectionConfigRequest(BaseSchema):
         },
     )
     sync_plugins = fields.Nested(
-        ldap_sync_plugins_request_schema(),
+        LDAPSyncPluginsRequest,
+        unknown=INCLUDE,
         description="The LDAP sync plug-ins configuration",
         example={},
         load_default={},
@@ -942,6 +1001,19 @@ class LDAPConnectionConfigRequest(BaseSchema):
         load_default={"sync_interval": {"days": 0, "hours": 0, "minutes": 5}},
     )
 
+    @post_load
+    def _post_load(self, data: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        group_base_dn = data["groups"]["group_base_dn"]
+        for key, grouplist in data["sync_plugins"].get("groups_to_roles", {}).items():
+            if key in {"state", "handle_nested"}:
+                continue
+            for group in grouplist:
+                if not group["group_dn"].lower().endswith(group_base_dn.lower()):
+                    raise ValidationError(
+                        f"The configured group_dn '{group['group_dn']}' must end with the group_base_dn '{group_base_dn}'."
+                    )
+        return data
+
 
 GENERAL_PROPERTIES_EXAMPLE = {
     "id": "ldap_1",
@@ -949,6 +1021,26 @@ GENERAL_PROPERTIES_EXAMPLE = {
     "comment": "test_comment",
     "documentation_url": "https://checkmk.com/doc/ldap_connections",
     "rule_activation": "activated",
+}
+
+LDAP_CONNECTION_EXAMPLE = {
+    "directory_type": {
+        "type": "active_directory_manual",
+        "ldap_server": "123.31.12.34",
+    },
+    "bind_credentials": {
+        "state": "enabled",
+        "type": "explicit",
+        "bind_dn": "cn=commonname,ou=OrgUnit,dc=domaincomp,dc=de",
+        "explicit_password": "yourpass",
+    },
+    "tcp_port": {"state": "enabled", "port": 389},
+    "ssl_encryption": "enable_ssl",
+    "connect_timeout": {"state": "enabled", "seconds": 5.0},
+    "ldap_version": {"state": "enabled", "version": 3},
+    "page_size": {"state": "enabled", "size": 1000},
+    "response_timeout": {"state": "enabled", "seconds": 60},
+    "connection_suffix": {"state": "enabled", "suffix": "dc=domaincomp,dc=de"},
 }
 
 
@@ -959,6 +1051,12 @@ class LDAPConnectionConfigCreateRequest(LDAPConnectionConfigRequest):
         description="General properties of an LDAP connection.",
         example=GENERAL_PROPERTIES_EXAMPLE,
     )
+    ldap_connection = fields.Nested(
+        LDAPConnectionCreateRequest,
+        required=True,
+        description="The LDAP connection configuration",
+        example=LDAP_CONNECTION_EXAMPLE,
+    )
 
 
 class LDAPConnectionConfigUpdateRequest(LDAPConnectionConfigRequest):
@@ -967,4 +1065,11 @@ class LDAPConnectionConfigUpdateRequest(LDAPConnectionConfigRequest):
         required=True,
         description="General properties of an LDAP connection.",
         example=GENERAL_PROPERTIES_EXAMPLE,
+    )
+
+    ldap_connection = fields.Nested(
+        LDAPConnectionUpdateRequest,
+        required=True,
+        description="The LDAP connection configuration",
+        example=LDAP_CONNECTION_EXAMPLE,
     )
